@@ -1,0 +1,14 @@
+#!/bin/bash
+# ============================================================
+# 文件：zetops
+# 功能：主程序入口（安装后软链接到 core/main.sh）
+# 作者：zc 团队
+# 版本：1.0.0
+# 日期：2026-08-05
+# 说明：仓库内直接运行时使用本启动器；install.sh 会将
+#       /usr/local/bin/zetops 软链接到 core/main.sh
+# ============================================================
+set -euo pipefail
+
+ZETOPS_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "${ZETOPS_HOME}/core/main.sh" "$@"

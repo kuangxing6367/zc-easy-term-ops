@@ -1,0 +1,34 @@
+# ============================================================
+# ZETOPS 用户配置文件示例 [Config Example]
+# 安装时由 install.sh 复制到 ~/.zetops/zetops.conf
+# 修改后重启 zetops 生效；所有字段均可选
+# ============================================================
+
+# ---- 通用配置 ----
+# 日志目录（需 root 写入权限）
+LOG_DIR="/var/log/zetops"
+# 日志级别：DEBUG < INFO < WARNING < ERROR
+LOG_LEVEL="INFO"
+# 备份默认目录
+BACKUP_DIR="/data/backup"
+# 数据默认目录
+DATA_DIR="/data"
+
+# ---- MySQL 默认配置 [Database] ----
+MYSQL_VERSION="8.0"
+MYSQL_DATA_DIR="/data/mysql"
+MYSQL_PORT="3306"
+
+# ---- PostgreSQL 默认配置 ----
+PG_VERSION="16"
+PG_DATA_DIR="/var/lib/postgresql"
+
+# ---- Redis 默认配置 ----
+REDIS_PORT="6379"
+
+# ---- Docker 容器配置 [Container] ----
+DOCKER_REGISTRY="docker.io"
+DOCKER_DATA_DIR="/var/lib/docker"
+
+# ---- 监控/告警 ----
+MONITOR_ALERT_EMAIL=""
