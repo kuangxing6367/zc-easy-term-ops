@@ -3,32 +3,36 @@
 # 文件：modules/02_package_manager.sh
 # 功能：软件包与仓库管理 [Package & Repository Manager]
 # 作者：zc 团队
-# 版本：1.0.0
-# 日期：2026-08-05
-# 说明：镜像源切换(API动态获取)、常用工具安装、批量安装/卸载、
-#       搜索与信息查看、第三方软件源(EPEL/IUS/PPA/Docker)
+# 版本：1.1.0
+# 日期：2026-08-06
+# 说明：软件源查看、镜像切换(API动态获取)、常用工具安装、
+#       批量安装/卸载、搜索与信息查看、已安装列表、
+#       第三方软件源(EPEL/IUS/PPA/Docker)
 # ============================================================
 set -euo pipefail
 
 module_name="软件包与仓库管理"
 module_short="package"
-module_version="1.0.0"
+module_version="1.1.0"
 
 module_description() {
-    echo "软件源镜像配置(清华/阿里/中科大)、常用工具安装、批量安装卸载、第三方源"
+    echo "软件源查看与镜像切换(清华/阿里/中科大)、常用工具安装、批量安装卸载、第三方源"
 }
 
 module_menu() {
     echo "======================================"
     echo "  ${module_name} 子菜单"
     echo "======================================"
-    echo " 1. 软件源镜像切换 (Mirror)"
-    echo " 2. 常用工具一键安装"
-    echo " 3. 批量安装软件包"
-    echo " 4. 批量卸载软件包"
-    echo " 5. 软件包搜索"
-    echo " 6. 软件包信息查看"
-    echo " 7. 添加第三方软件源"
+    echo " 1. 查看当前软件源"
+    echo " 2. 软件源镜像切换 (Mirror)"
+    echo " 3. 常用工具一键安装"
+    echo " 4. 批量安装软件包"
+    echo " 5. 批量卸载软件包"
+    echo " 6. 软件包搜索"
+    echo " 7. 软件包信息查看"
+    echo " 8. 查看已安装软件包列表"
+    echo " 9. 查看第三方软件源"
+    echo "10. 添加第三方软件源"
     echo " 0. 返回主菜单"
     echo "======================================"
 }
@@ -36,13 +40,16 @@ module_menu() {
 module_execute() {
     local choice="$1"
     case "${choice}" in
-        1) mirror_switch ;;
-        2) tools_install ;;
-        3) batch_install ;;
-        4) batch_remove ;;
-        5) pkg_search ;;
-        6) pkg_info ;;
-        7) third_party_repo ;;
+        1) repo_view ;;
+        2) mirror_switch ;;
+        3) tools_install ;;
+        4) batch_install ;;
+        5) batch_remove ;;
+        6) pkg_search ;;
+        7) pkg_info ;;
+        8) pkg_list_installed ;;
+        9) third_party_repo_view ;;
+       10) third_party_repo ;;
         0) return 0 ;;
         *) log_error "无效选项: ${choice}" ;;
     esac
@@ -50,12 +57,47 @@ module_execute() {
 }
 
 # ------------------------------------------------------------
-# [镜像源] 切换软件源镜像（从 API 获取镜像源列表）
+# [软件源] 查看当前软件源配置
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+repo_view() {
+    local pm f
+    pm=$(detect_pkg_manager)
+    log_info "================ 当前软件源配置 ================"
+    case "${pm}" in
+        apt)
+            echo "--- /etc/apt/sources.list ---"
+            cat /etc/apt/sources.list 2>/dev/null || echo "（文件不存在）"
+            echo "--- /etc/apt/sources.list.d/ ---"
+            if ls /etc/apt/sources.list.d/*.list >/dev/null 2>&1; then
+                for f in /etc/apt/sources.list.d/*.list; do
+                    echo ">>> ${f}"
+                    cat "${f}" 2>/dev/null || true
+                done
+            else
+                echo "（无附加源文件）"
+            fi
+            ;;
+        dnf|yum)
+            "${pm}" repolist 2>/dev/null || log_warning "repolist 获取失败"
+            ;;
+        *)
+            log_warning "暂不支持 ${pm} 的软件源查看"
+            ;;
+    esac
+    echo "-----------------------------------------------"
+}
+
+# ------------------------------------------------------------
+# [镜像源] 切换软件源镜像（切换前先展示当前源，从 API 获取镜像列表）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 mirror_switch() {
     check_root || return 1
+    log_info "切换前先展示当前软件源配置:"
+    repo_view
     local distro pm
     distro=$(get_distro)
     pm=$(detect_pkg_manager)
@@ -77,6 +119,7 @@ mirror_switch() {
         i=$((i + 1))
         printf "  %d. %-20s %s\n" "${i}" "${name}" "${url}"
     done <<< "${mirrors}"
+    local sel
     read_input sel "选择镜像源序号" "1"
     if ! [[ "${sel}" =~ ^[0-9]+$ ]] || (( sel < 1 || sel > i )); then
         log_error "无效选择"
@@ -173,7 +216,7 @@ batch_install() {
 # ------------------------------------------------------------
 batch_remove() {
     check_root || return 1
-    local file
+    local file pm
     read_input file "包名列表文件路径（留空则手动输入，空格分隔）:" ""
     local pkgs=()
     if [[ -n "${file}" ]]; then
@@ -186,7 +229,8 @@ batch_remove() {
     fi
     [[ ${#pkgs[@]} -eq 0 ]] && { log_error "未输入任何软件包"; return 1; }
     confirm_action "卸载软件包: ${pkgs[*]}" || return 1
-    case "$(detect_pkg_manager)" in
+    pm=$(detect_pkg_manager)
+    case "${pm}" in
         apt)  apt-get purge -y "${pkgs[@]}" ;;
         dnf|yum) "${pm}" remove -y "${pkgs[@]}" ;;
         *)    log_error "暂不支持" ;;
@@ -227,13 +271,84 @@ pkg_info() {
 }
 
 # ------------------------------------------------------------
+# [已安装] 查看已安装软件包列表（支持关键字过滤）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pkg_list_installed() {
+    local keyword pm
+    read_input keyword "输入过滤关键字（留空显示全部）:" ""
+    pm=$(detect_pkg_manager)
+    log_info "================ 已安装软件包列表 ================"
+    case "${pm}" in
+        apt)
+            if [[ -n "${keyword}" ]]; then
+                dpkg -l 2>/dev/null | grep '^ii' | grep -i "${keyword}" || log_info "未找到匹配的软件包: ${keyword}"
+            else
+                dpkg -l 2>/dev/null | grep '^ii' || log_info "未查询到已安装软件包"
+            fi
+            ;;
+        dnf|yum)
+            if [[ -n "${keyword}" ]]; then
+                rpm -qa 2>/dev/null | grep -i "${keyword}" || log_info "未找到匹配的软件包: ${keyword}"
+            else
+                rpm -qa 2>/dev/null || log_info "未查询到已安装软件包"
+            fi
+            ;;
+        *)
+            log_warning "暂不支持 ${pm} 的已安装列表查询"
+            ;;
+    esac
+    echo "-----------------------------------------------"
+}
+
+# ------------------------------------------------------------
+# [第三方源] 查看已添加的第三方软件源
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+third_party_repo_view() {
+    local pm f
+    pm=$(detect_pkg_manager)
+    log_info "================ 已添加的第三方软件源 ================"
+    case "${pm}" in
+        apt)
+            echo "--- /etc/apt/sources.list.d/ ---"
+            if ls /etc/apt/sources.list.d/*.list >/dev/null 2>&1; then
+                for f in /etc/apt/sources.list.d/*.list; do
+                    echo ">>> ${f}"
+                    cat "${f}" 2>/dev/null || true
+                done
+            else
+                echo "（无附加第三方源）"
+            fi
+            ;;
+        dnf|yum)
+            echo "--- /etc/yum.repos.d/ ---"
+            if ls /etc/yum.repos.d/*.repo >/dev/null 2>&1; then
+                for f in /etc/yum.repos.d/*.repo; do
+                    echo ">>> ${f}"
+                    head -n 8 "${f}" 2>/dev/null || true
+                done
+            else
+                echo "（无第三方源文件）"
+            fi
+            ;;
+        *)
+            log_warning "暂不支持 ${pm} 的第三方源查看"
+            ;;
+    esac
+    echo "-----------------------------------------------"
+}
+
+# ------------------------------------------------------------
 # [第三方源] 添加 EPEL/IUS/PPA/Docker 软件源
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 third_party_repo() {
     check_root || return 1
-    local pm distro
+    local pm distro sel
     pm=$(detect_pkg_manager)
     distro=$(get_distro)
     echo "可添加的第三方源:"
@@ -254,7 +369,11 @@ third_party_repo() {
         2)
             confirm_action "添加 IUS 源（仅 CentOS 7）" || return 1
             if [[ "${distro}" == "centos" ]]; then
-                yum install -y "https://repo.ius.io/ius-release-el7.rpm" && log_success "IUS 源已添加"
+                if yum install -y "https://repo.ius.io/ius-release-el7.rpm"; then
+                    log_success "IUS 源已添加"
+                else
+                    log_error "IUS 源安装失败"
+                fi
             else
                 log_error "IUS 仅适用于 CentOS 7"
             fi

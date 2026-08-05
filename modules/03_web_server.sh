@@ -3,16 +3,16 @@
 # 文件：modules/03_web_server.sh
 # 功能：Web 服务器与反向代理 [Web Server & Reverse Proxy]
 # 作者：zc 团队
-# 版本：1.0.0
-# 日期：2026-08-05
-# 说明：Nginx（编译安装/虚拟主机/SSL/负载均衡/限流/日志分析）、
-#       Apache（安装/虚拟主机/模块）、Tomcat（安装/JVM/部署war包）
+# 版本：1.1.0
+# 日期：2026-08-06
+# 说明：Nginx（状态/虚拟主机/SSL/编译安装/负载均衡/限流/日志分析）、
+#       Apache（状态/虚拟主机/安装/模块）、Tomcat（状态/部署/安装/JVM）
 # ============================================================
 set -euo pipefail
 
 module_name="Web服务器与反向代理"
 module_short="web_server"
-module_version="1.0.0"
+module_version="1.1.0"
 
 # 默认配置（可通过 ~/.zetops/zetops.conf 覆盖）
 NGINX_PREFIX="${NGINX_PREFIX:-/usr/local/nginx}"
@@ -25,7 +25,7 @@ module_menu() {
     echo "======================================"
     echo "  ${module_name} 子菜单"
     echo "======================================"
-    echo " 1. Nginx 管理（安装/虚拟主机/SSL/负载均衡）"
+    echo " 1. Nginx 管理（状态/虚拟主机/SSL/负载均衡）"
     echo " 2. Apache 管理"
     echo " 3. Tomcat 管理"
     echo " 0. 返回主菜单"
@@ -53,32 +53,95 @@ nginx_manager() {
         echo "======================================"
         echo "  [Nginx管理] 子菜单"
         echo "======================================"
-        echo " 1. 编译安装 Nginx（可选SSL/Stream模块）"
-        echo " 2. 虚拟主机配置 (VirtualHost)"
-        echo " 3. SSL 证书配置 (Let's Encrypt)"
-        echo " 4. 负载均衡配置 (Load Balancing)"
-        echo " 5. 限流配置 (Rate Limit)"
-        echo " 6. 配置语法检查 (nginx -t)"
-        echo " 7. 日志分析"
-        echo " 8. 重载配置"
+        echo " 1. 查看服务状态"
+        echo " 2. 查看虚拟主机列表"
+        echo " 3. 查看 SSL 证书列表"
+        echo " 4. 编译安装 Nginx（可选SSL/Stream模块）"
+        echo " 5. 虚拟主机配置 (VirtualHost)"
+        echo " 6. SSL 证书配置 (Let's Encrypt)"
+        echo " 7. 负载均衡配置 (Load Balancing)"
+        echo " 8. 限流配置 (Rate Limit)"
+        echo " 9. 配置语法检查 (nginx -t)"
+        echo "10. 日志分析"
+        echo "11. 重载配置"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-8) [q=返回]: " c || return
+        read -r -p "请选择 (0-11) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
-            1) nginx_install ;;
-            2) nginx_vhost ;;
-            3) nginx_ssl ;;
-            4) nginx_lb ;;
-            5) nginx_limit ;;
-            6) nginx_check ;;
-            7) nginx_log_analysis ;;
-            8) nginx_reload_config ;;
+            1) nginx_status_view ;;
+            2) nginx_vhost_view ;;
+            3) nginx_ssl_view ;;
+            4) nginx_install ;;
+            5) nginx_vhost ;;
+            6) nginx_ssl ;;
+            7) nginx_lb ;;
+            8) nginx_limit ;;
+            9) nginx_check ;;
+           10) nginx_log_analysis ;;
+           11) nginx_reload_config ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
         press_enter
     done
+}
+
+# ------------------------------------------------------------
+# [Nginx] 查看服务状态（systemctl status nginx）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+nginx_status_view() {
+    log_info "================ Nginx 服务状态 ================"
+    if check_command systemctl; then
+        systemctl status nginx --no-pager 2>/dev/null || log_warning "systemd 中未找到 nginx 服务（可能为编译安装）"
+    fi
+    if pgrep -x nginx >/dev/null 2>&1; then
+        echo "Nginx 进程运行中，PID: $(pgrep -x nginx | tr '\n' ' ')"
+    fi
+    echo "-----------------------------------------------"
+}
+
+# ------------------------------------------------------------
+# [Nginx] 查看虚拟主机列表（conf.d + server_name）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+nginx_vhost_view() {
+    log_info "================ Nginx 虚拟主机列表 ================"
+    echo "--- 配置文件目录 ---"
+    if [[ -d "${NGINX_PREFIX}/conf/conf.d" ]]; then
+        ls -la "${NGINX_PREFIX}/conf/conf.d/" 2>/dev/null || true
+    elif [[ -d /etc/nginx/conf.d ]]; then
+        ls -la /etc/nginx/conf.d/ 2>/dev/null || true
+    else
+        echo "（未找到 conf.d 配置目录）"
+    fi
+    echo "--- server_name 列表（nginx -T 解析）---"
+    if [[ -x "${NGINX_PREFIX}/sbin/nginx" ]]; then
+        "${NGINX_PREFIX}/sbin/nginx" -T 2>/dev/null | grep "server_name" || echo "（未能解析，可能需要 root 权限或 Nginx 未安装）"
+    elif check_command nginx; then
+        nginx -T 2>/dev/null | grep "server_name" || echo "（未能解析，可能需要 root 权限或 Nginx 未安装）"
+    else
+        log_warning "Nginx 未安装，无法解析 server_name"
+    fi
+    echo "-----------------------------------------------"
+}
+
+# ------------------------------------------------------------
+# [Nginx] 查看 SSL 证书列表（certbot certificates）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+nginx_ssl_view() {
+    log_info "================ SSL 证书列表 ================"
+    if check_command certbot; then
+        certbot certificates 2>/dev/null || log_warning "certbot 未配置证书或执行失败"
+    else
+        log_warning "未安装 certbot（Let's Encrypt 客户端），无证书可查看"
+    fi
+    echo "-----------------------------------------------"
 }
 
 # ------------------------------------------------------------
@@ -137,12 +200,18 @@ EOF
 }
 
 # ------------------------------------------------------------
-# [Nginx] 配置虚拟主机
+# [Nginx] 配置虚拟主机（配置前先展示现有配置目录）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 nginx_vhost() {
     check_root || return 1
+    echo "当前虚拟主机配置目录:"
+    if [[ -d "${NGINX_PREFIX}/conf/conf.d" ]]; then
+        ls "${NGINX_PREFIX}/conf/conf.d/" 2>/dev/null || true
+    elif [[ -d /etc/nginx/conf.d ]]; then
+        ls /etc/nginx/conf.d/ 2>/dev/null || true
+    fi
     local domain root port
     read_input domain "域名(如 example.com):" ""
     read_input root "网站根目录:" "/var/www/html"
@@ -171,12 +240,16 @@ EOF
 }
 
 # ------------------------------------------------------------
-# [Nginx] 申请与配置 SSL 证书（Let's Encrypt / certbot）
+# [Nginx] 申请与配置 SSL 证书（配置前先展示现有证书）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 nginx_ssl() {
     check_root || return 1
+    if check_command certbot; then
+        echo "当前已有证书（certbot certificates）:"
+        certbot certificates 2>/dev/null | grep -E "Certificate Name|Domains|Expiry" || echo "（尚未申请证书）"
+    fi
     if ! check_command certbot; then
         log_info "安装 certbot（Let's Encrypt 客户端）..."
         install_pkg certbot python3-certbot-nginx || { log_error "certbot 安装失败"; return 1; }
@@ -190,12 +263,18 @@ nginx_ssl() {
 }
 
 # ------------------------------------------------------------
-# [Nginx] 配置负载均衡（Load Balancing / 反向代理集群）
+# [Nginx] 配置负载均衡（配置前先展示现有 LB 配置）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 nginx_lb() {
     check_root || return 1
+    echo "当前反向代理/负载均衡配置（conf.d）:"
+    if ls "${NGINX_PREFIX}/conf/conf.d/"*-lb.conf >/dev/null 2>&1; then
+        ls "${NGINX_PREFIX}/conf/conf.d/"*-lb.conf 2>/dev/null || true
+    else
+        echo "（暂无负载均衡配置）"
+    fi
     local domain port upstream_servers
     read_input domain "负载均衡域名:" ""
     read_input port "对外监听端口:" "80"
@@ -213,12 +292,14 @@ nginx_lb() {
 }
 
 # ------------------------------------------------------------
-# [Nginx] 配置限流（Rate Limit，防刷）
+# [Nginx] 配置限流（配置前先展示现有限流配置）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 nginx_limit() {
     check_root || return 1
+    echo "当前限流配置（limit_req_zone）:"
+    grep -h "limit_req_zone" "${NGINX_PREFIX}/conf/nginx.conf" 2>/dev/null || echo "（未配置限流 Zone）"
     local rate
     read_input rate "限流速率（如 5r/s 或 20r/m）:" "5r/s"
     grep -q "limit_req_zone" "${NGINX_PREFIX}/conf/nginx.conf" || \
@@ -283,24 +364,64 @@ apache_manager() {
         echo "======================================"
         echo "  [Apache管理] 子菜单"
         echo "======================================"
-        echo " 1. 安装 Apache (httpd)"
-        echo " 2. 卸载 Apache"
-        echo " 3. 配置虚拟主机 (VirtualHost)"
-        echo " 4. 启用/禁用模块"
+        echo " 1. 查看服务状态"
+        echo " 2. 查看虚拟主机列表"
+        echo " 3. 安装 Apache (httpd)"
+        echo " 4. 卸载 Apache"
+        echo " 5. 配置虚拟主机 (VirtualHost)"
+        echo " 6. 启用/禁用模块"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-4) [q=返回]: " c || return
+        read -r -p "请选择 (0-6) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
-            1) apache_install ;;
-            2) apache_remove ;;
-            3) apache_vhost ;;
-            4) apache_module ;;
+            1) apache_status_view ;;
+            2) apache_vhost_view ;;
+            3) apache_install ;;
+            4) apache_remove ;;
+            5) apache_vhost ;;
+            6) apache_module ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
         press_enter
     done
+}
+
+# ------------------------------------------------------------
+# [Apache] 查看服务状态（systemctl status apache2/httpd）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+apache_status_view() {
+    log_info "================ Apache 服务状态 ================"
+    if check_command systemctl; then
+        if systemctl list-unit-files apache2.service >/dev/null 2>&1; then
+            systemctl status apache2 --no-pager 2>/dev/null || true
+        elif systemctl list-unit-files httpd.service >/dev/null 2>&1; then
+            systemctl status httpd --no-pager 2>/dev/null || true
+        else
+            log_warning "systemd 中未找到 apache2/httpd 服务"
+        fi
+    fi
+    echo "-----------------------------------------------"
+}
+
+# ------------------------------------------------------------
+# [Apache] 查看虚拟主机列表（apachectl -S）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+apache_vhost_view() {
+    log_info "================ Apache 虚拟主机列表 ================"
+    if check_command apachectl; then
+        apachectl -S 2>/dev/null || log_warning "apachectl -S 执行失败（可能需要 root 权限）"
+    elif check_command apache2ctl; then
+        apache2ctl -S 2>/dev/null || log_warning "apache2ctl -S 执行失败（可能需要 root 权限）"
+    else
+        log_warning "未找到 apachectl/apache2ctl"
+    fi
+    echo "-----------------------------------------------"
 }
 
 # ------------------------------------------------------------
@@ -339,12 +460,22 @@ apache_remove() {
 }
 
 # ------------------------------------------------------------
-# [Apache] 虚拟主机配置
+# [Apache] 虚拟主机配置（配置前先展示现有虚拟主机）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 apache_vhost() {
     check_root || return 1
+    case "$(detect_pkg_manager)" in
+        apt)
+            echo "当前虚拟主机配置文件（sites-available）:"
+            ls /etc/apache2/sites-available/ 2>/dev/null || true
+            ;;
+        dnf|yum)
+            echo "当前虚拟主机配置文件（conf.d）:"
+            ls /etc/httpd/conf.d/*.conf 2>/dev/null || true
+            ;;
+    esac
     local domain root port
     read_input domain "域名:" ""
     read_input root "网站根目录:" "/var/www/html"
@@ -423,22 +554,70 @@ tomcat_manager() {
         echo "======================================"
         echo "  [Tomcat管理] 子菜单"
         echo "======================================"
-        echo " 1. 安装 Tomcat"
-        echo " 2. JVM 参数配置 (堆内存等)"
-        echo " 3. 部署 WAR 包"
+        echo " 1. 查看服务状态"
+        echo " 2. 查看已部署应用"
+        echo " 3. 安装 Tomcat"
+        echo " 4. JVM 参数配置 (堆内存等)"
+        echo " 5. 部署 WAR 包"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-3) [q=返回]: " c || return
+        read -r -p "请选择 (0-5) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
-            1) tomcat_install ;;
-            2) tomcat_jvm ;;
-            3) tomcat_deploy_war ;;
+            1) tomcat_status_view ;;
+            2) tomcat_apps_view ;;
+            3) tomcat_install ;;
+            4) tomcat_jvm ;;
+            5) tomcat_deploy_war ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
         press_enter
     done
+}
+
+# ------------------------------------------------------------
+# [Tomcat] 查看服务状态（systemctl status tomcat）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+tomcat_status_view() {
+    log_info "================ Tomcat 服务状态 ================"
+    if check_command systemctl; then
+        systemctl status tomcat --no-pager 2>/dev/null || log_warning "systemd 中未找到 tomcat 服务"
+    fi
+    if pgrep -f "catalina" >/dev/null 2>&1; then
+        echo "Tomcat 进程运行中（catalina），PID: $(pgrep -f catalina | tr '\n' ' ')"
+    fi
+    echo "-----------------------------------------------"
+}
+
+# ------------------------------------------------------------
+# [Tomcat] 查看已部署应用（webapps）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+tomcat_apps_view() {
+    log_info "================ Tomcat 已部署应用 ================"
+    local home="" pid
+    # 从运行进程探测 CATALINA_HOME
+    pid=$(pgrep -f "catalina.home=" 2>/dev/null | head -n 1 || true)
+    if [[ -n "${pid}" ]]; then
+        home=$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null | grep "^CATALINA_HOME=" | cut -d= -f2- || true)
+    fi
+    if [[ -z "${home}" ]]; then
+        home=$(get_config_value "TOMCAT_HOME" "")
+    fi
+    if [[ -z "${home}" ]]; then
+        home="/opt/tomcat-10.1.31"
+    fi
+    echo "CATALINA_HOME: ${home}"
+    if [[ -d "${home}/webapps" ]]; then
+        ls -la "${home}/webapps" 2>/dev/null || true
+    else
+        log_warning "未找到 ${home}/webapps 目录（Tomcat 可能尚未安装）"
+    fi
+    echo "-----------------------------------------------"
 }
 
 # ------------------------------------------------------------
@@ -482,7 +661,7 @@ EOF
 }
 
 # ------------------------------------------------------------
-# [Tomcat] JVM 参数配置（内存/GC）
+# [Tomcat] JVM 参数配置（配置前先展示当前 setenv.sh）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
@@ -491,6 +670,12 @@ tomcat_jvm() {
     local home
     read_input home "CATALINA_HOME 路径:" "/opt/tomcat-10.1.31"
     [[ -f "${home}/bin/catalina.sh" ]] || { log_error "无效的 CATALINA_HOME: ${home}"; return 1; }
+    if [[ -f "${home}/bin/setenv.sh" ]]; then
+        echo "当前 JVM 配置（${home}/bin/setenv.sh）:"
+        cat "${home}/bin/setenv.sh" 2>/dev/null || true
+    else
+        echo "当前无 setenv.sh（使用默认 JVM 参数）"
+    fi
     local xms xmx
     read_input xms "初始堆内存 -Xms:" "512m"
     read_input xmx "最大堆内存 -Xmx:" "1024m"
@@ -505,7 +690,7 @@ EOF
 }
 
 # ------------------------------------------------------------
-# [Tomcat] 部署 WAR 包
+# [Tomcat] 部署 WAR 包（部署前先展示当前 webapps）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
@@ -513,6 +698,10 @@ tomcat_deploy_war() {
     check_root || return 1
     local home war name
     read_input home "CATALINA_HOME 路径:" "/opt/tomcat-10.1.31"
+    if [[ -d "${home}/webapps" ]]; then
+        echo "当前 webapps 已部署内容:"
+        ls "${home}/webapps/" 2>/dev/null || true
+    fi
     read_input war "WAR 包路径:" ""
     [[ -f "${war}" ]] || { log_error "WAR 包不存在: ${war}"; return 1; }
     name=$(basename "${war}" .war)

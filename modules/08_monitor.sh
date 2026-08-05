@@ -3,16 +3,18 @@
 # 文件：modules/08_monitor.sh
 # 功能：监控与日志管理 [Monitoring & Log Management]
 # 作者：zc 团队
-# 版本：1.0.0
-# 日期：2026-08-05
+# 版本：1.1.0
+# 日期：2026-08-06
 # 说明：系统资源监控(CPU高负载自动诊断)、进程管理、磁盘/LVM管理、
 #       权限诊断(ACL/挂载选项)、日志收集(logrotate/journalctl)
+#       v1.1.0: 补齐查看功能（磁盘挂载列表/logrotate规则/日志归档列表），
+#               实现"先看后改"
 # ============================================================
 set -euo pipefail
 
 module_name="监控与日志管理"
 module_short="monitor"
-module_version="1.0.0"
+module_version="1.1.0"
 
 module_description() {
     echo "资源监控(CPU/内存/磁盘/网络)、进程管理、LVM磁盘管理、权限诊断、日志收集分析"
@@ -173,24 +175,40 @@ disk_manager() {
         echo "======================================"
         echo "  [磁盘管理] 子菜单"
         echo "======================================"
-        echo " 1. 查看分区使用"
-        echo " 2. LVM 管理（创建/扩展/缩小）"
-        echo " 3. 磁盘挂载/卸载"
-        echo " 4. 查找被删除但未释放的文件"
+        echo " 1. 查看当前挂载列表"
+        echo " 2. 查看分区使用"
+        echo " 3. LVM 管理（创建/扩展/缩小）"
+        echo " 4. 磁盘挂载/卸载"
+        echo " 5. 查找被删除但未释放的文件"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-4) [q=返回]: " c || return
+        read -r -p "请选择 (0-5) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
-            1) disk_usage ;;
-            2) lvm_manager ;;
-            3) disk_mount ;;
-            4) disk_deleted_find ;;
+            1) disk_mount_list ;;
+            2) disk_usage ;;
+            3) lvm_manager ;;
+            4) disk_mount ;;
+            5) disk_deleted_find ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
         press_enter
     done
+}
+
+# ------------------------------------------------------------
+# [磁盘] 查看当前挂载列表（findmnt / mount -l）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+disk_mount_list() {
+    log_info "== 当前挂载列表 =="
+    if check_command findmnt; then
+        findmnt -lo TARGET,SOURCE,FSTYPE,OPTIONS 2>/dev/null || findmnt
+    else
+        mount -l
+    fi
 }
 
 # ------------------------------------------------------------
@@ -343,16 +361,20 @@ log_manager() {
         echo "  [日志管理] 子菜单"
         echo "======================================"
         echo " 1. journalctl 交互式过滤"
-        echo " 2. logrotate 配置"
-        echo " 3. 日志打包归档"
+        echo " 2. 查看 logrotate 规则"
+        echo " 3. 配置 logrotate 规则"
+        echo " 4. 日志打包归档"
+        echo " 5. 查看已有归档列表"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-3) [q=返回]: " c || return
+        read -r -p "请选择 (0-5) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
             1) journal_filter ;;
-            2) logrotate_config ;;
-            3) log_archive ;;
+            2) logrotate_view ;;
+            3) logrotate_config ;;
+            4) log_archive ;;
+            5) log_archive_list ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
@@ -377,6 +399,23 @@ journal_filter() {
         2) read_input svc "服务名(如 sshd/nginx):" ""; journalctl -u "${svc}" --no-pager | tail -n 80 ;;
         3) local kw; read_input kw "关键字:" ""; journalctl --no-pager | grep -i "${kw}" | tail -n 50 ;;
     esac
+}
+
+# ------------------------------------------------------------
+# [日志] 查看现有 logrotate 规则
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+logrotate_view() {
+    log_info "== /etc/logrotate.d/ 下的规则文件 =="
+    ls -l /etc/logrotate.d/ 2>/dev/null || { log_warning "无法访问 /etc/logrotate.d/"; return 1; }
+    local key="/etc/logrotate.d/zetops-app"
+    if [[ -f "${key}" ]]; then
+        log_info "== 关键规则: zetops-app（本工具箱生成） =="
+        cat "${key}"
+    else
+        log_info "未找到本工具箱生成的 zetops-app 规则，可先执行『配置 logrotate 规则』"
+    fi
 }
 
 # ------------------------------------------------------------
@@ -422,6 +461,29 @@ log_archive() {
     tar czf "${file}" -C "$(dirname "${src}")" "$(basename "${src}")" 2>/dev/null
     stop_spinner
     log_success "日志已归档: ${file}"
+}
+
+# ------------------------------------------------------------
+# [日志] 查看已有归档列表
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+log_archive_list() {
+    local dirs=("${BACKUP_DIR}/logs" "${LOG_DIR}/logs" "/var/log/archive")
+    local found=0 d
+    for d in "${dirs[@]}"; do
+        if [[ -d "${d}" ]] && ls -A "${d}" 2>/dev/null | grep -q .; then
+            if [[ ${found} == 0 ]]; then
+                log_info "== 已有日志归档列表 =="
+            fi
+            found=1
+            echo "---- ${d} ----"
+            ls -lht "${d}" | head -n 20
+        fi
+    done
+    if [[ ${found} == 0 ]]; then
+        log_warning "未找到日志归档（检查目录: ${BACKUP_DIR}/logs、${LOG_DIR}/logs、/var/log/archive）"
+    fi
 }
 
 # ---- 独立执行入口 ----

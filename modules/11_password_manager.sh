@@ -3,10 +3,11 @@
 # 文件：modules/11_password_manager.sh
 # 功能：密码与权限管理 [Password & Permission Management]
 # 作者：zc 团队
-# 版本：1.0.0
-# 日期：2026-08-05
+# 版本：1.1.0
+# 日期：2026-08-06
 # 说明：MySQL/PostgreSQL/Redis 密码重置、Linux 用户密码修改、
 #       sudo 权限恢复、SSH 密钥生成与分发、密码策略检查
+#       全部功能遵循"先看后改"原则，查看项置于菜单第一位
 # 注意：函数统一使用 pm_ 前缀，避免与 database 模块的
 #       mysql_*/pg_*/redis_* 函数冲突
 # ============================================================
@@ -14,7 +15,7 @@ set -euo pipefail
 
 module_name="密码与权限管理"
 module_short="password_manager"
-module_version="1.0.0"
+module_version="1.1.0"
 
 module_description() {
     echo "MySQL/PostgreSQL/Redis 密码重置、Linux 用户密码、sudo 恢复、SSH 密钥分发、密码策略"
@@ -24,14 +25,13 @@ module_menu() {
     echo "======================================"
     echo "  ${module_name} 子菜单"
     echo "======================================"
-    echo " 1. MySQL root 密码重置"
-    echo " 2. MySQL 用户密码修改"
-    echo " 3. PostgreSQL 密码重置"
-    echo " 4. Redis 密码设置/修改"
-    echo " 5. Linux 用户密码修改"
-    echo " 6. sudo 权限恢复"
-    echo " 7. SSH 密钥生成与分发"
-    echo " 8. 密码策略检查"
+    echo " 1. MySQL 密码管理"
+    echo " 2. PostgreSQL 密码管理"
+    echo " 3. Redis 密码管理"
+    echo " 4. Linux 用户密码管理"
+    echo " 5. sudo 权限管理"
+    echo " 6. SSH 密钥管理"
+    echo " 7. 密码策略管理"
     echo " 0. 返回主菜单"
     echo "======================================"
 }
@@ -39,14 +39,13 @@ module_menu() {
 module_execute() {
     local choice="$1"
     case "${choice}" in
-        1) pm_mysql_root_reset ;;
-        2) pm_mysql_user_passwd ;;
-        3) pm_pg_reset ;;
-        4) pm_redis_passwd ;;
-        5) pm_linux_passwd ;;
-        6) pm_sudo_recover ;;
-        7) pm_ssh_keygen ;;
-        8) pm_policy_check ;;
+        1) pm_mysql_menu ;;
+        2) pm_pg_menu ;;
+        3) pm_redis_menu ;;
+        4) pm_linux_menu ;;
+        5) pm_sudo_menu ;;
+        6) pm_ssh_menu ;;
+        7) pm_policy_menu ;;
         0) return 0 ;;
         *) log_error "无效选项: ${choice}" ;;
     esac
@@ -54,13 +53,64 @@ module_execute() {
 }
 
 # ------------------------------------------------------------
+# [MySQL] 二级菜单（查看在第一位）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_mysql_menu() {
+    local act
+    while true; do
+        echo "--------------------------------------"
+        echo "  MySQL 密码管理"
+        echo "--------------------------------------"
+        echo " 1. 查看 MySQL 用户列表/密码状态"
+        echo " 2. MySQL root 密码重置"
+        echo " 3. MySQL 用户密码修改"
+        echo " 0. 返回上级菜单"
+        echo "--------------------------------------"
+        read -r -p "请选择 (0-3): " act || return 0
+        case "${act}" in
+            1) pm_mysql_view ;;
+            2) pm_mysql_root_reset ;;
+            3) pm_mysql_user_passwd ;;
+            0) return 0 ;;
+            *) log_error "无效选项: ${act}" ;;
+        esac
+        press_enter
+    done
+}
+
+# ------------------------------------------------------------
+# [MySQL] 查看用户列表与密码状态
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_mysql_view() {
+    check_command mysql || { log_error "MySQL 客户端未安装"; return 1; }
+    local rootpw
+    read_input rootpw "MySQL root 密码(免密环境留空):" ""
+    log_info "===== MySQL 用户列表与密码状态 ====="
+    local sql="SELECT user, host, IF(authentication_string<>'' OR plugin IN ('caching_sha2_password','mysql_native_password','sha256_password'),'已设置','未设置') AS passwd_status FROM mysql.user ORDER BY host, user;"
+    if [[ -n "${rootpw}" ]]; then
+        mysql -uroot -p"${rootpw}" -e "${sql}" 2>/dev/null \
+            || { log_error "连接失败（root 密码错误或 MySQL 未运行）"; return 1; }
+    else
+        mysql -uroot -e "${sql}" 2>/dev/null \
+            || { log_error "连接失败（root 密码错误或 MySQL 未运行）"; return 1; }
+    fi
+}
+
+# ------------------------------------------------------------
 # [MySQL] root 密码重置（--skip-grant-tables 安全模式）
+# 操作前先查看当前用户列表（先看后改）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 pm_mysql_root_reset() {
     check_root || return 1
     check_command mysqld || check_command mariadbd || { log_error "MySQL/MariaDB 未安装"; return 1; }
+    # 先看后改：先展示当前用户列表
+    pm_mysql_view
     confirm_action "重置 MySQL root 密码（服务将临时重启）" || return 1
     local new_pw confirm_pw
     read -s -p "输入新密码: " new_pw || new_pw=""; echo
@@ -88,13 +138,15 @@ SQL
 }
 
 # ------------------------------------------------------------
-# [MySQL] 修改指定用户的密码
+# [MySQL] 修改指定用户的密码（操作前先查看用户列表）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 pm_mysql_user_passwd() {
     check_root || return 1
     check_command mysql || { log_error "MySQL 客户端未安装"; return 1; }
+    # 先看后改：先展示当前用户列表
+    pm_mysql_view
     local user host pw rootpw
     read_input user "用户名:" ""
     read_input host "主机(host):" "localhost"
@@ -107,12 +159,54 @@ pm_mysql_user_passwd() {
 }
 
 # ------------------------------------------------------------
+# [PostgreSQL] 二级菜单（查看在第一位）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_pg_menu() {
+    local act
+    while true; do
+        echo "--------------------------------------"
+        echo "  PostgreSQL 密码管理"
+        echo "--------------------------------------"
+        echo " 1. 查看 PostgreSQL 用户列表"
+        echo " 2. postgres 密码重置"
+        echo " 0. 返回上级菜单"
+        echo "--------------------------------------"
+        read -r -p "请选择 (0-2): " act || return 0
+        case "${act}" in
+            1) pm_pg_view ;;
+            2) pm_pg_reset ;;
+            0) return 0 ;;
+            *) log_error "无效选项: ${act}" ;;
+        esac
+        press_enter
+    done
+}
+
+# ------------------------------------------------------------
+# [PostgreSQL] 查看用户列表
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_pg_view() {
+    check_root || return 1
+    check_command psql || { log_error "psql 未安装"; return 1; }
+    log_info "===== PostgreSQL 用户列表 ====="
+    sudo -u postgres psql -c '\du' 2>/dev/null \
+        || runuser -u postgres -- psql -c '\du' 2>/dev/null \
+        || { log_error "无法连接 PostgreSQL（服务可能未启动）"; return 1; }
+}
+# ------------------------------------------------------------
 # [PostgreSQL] 密码重置（pg_hba.conf 临时 trust 模式）
+# 操作前先显示用户列表（先看后改）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 pm_pg_reset() {
     check_root || return 1
+    # 先看后改：先展示当前用户列表
+    pm_pg_view
     local hba="/etc/postgresql/$(ls /etc/postgresql 2>/dev/null | tail -n1)/main/pg_hba.conf"
     [[ -f "${hba}" ]] || hba="/var/lib/pgsql/data/pg_hba.conf"
     [[ -f "${hba}" ]] || { log_error "未找到 pg_hba.conf"; return 1; }
@@ -138,13 +232,66 @@ pm_pg_reset() {
 }
 
 # ------------------------------------------------------------
+# [Redis] 二级菜单（查看在第一位）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_redis_menu() {
+    local act
+    while true; do
+        echo "--------------------------------------"
+        echo "  Redis 密码管理"
+        echo "--------------------------------------"
+        echo " 1. 查看 Redis 是否已设密码"
+        echo " 2. Redis 密码设置/修改"
+        echo " 0. 返回上级菜单"
+        echo "--------------------------------------"
+        read -r -p "请选择 (0-2): " act || return 0
+        case "${act}" in
+            1) pm_redis_view ;;
+            2) pm_redis_passwd ;;
+            0) return 0 ;;
+            *) log_error "无效选项: ${act}" ;;
+        esac
+        press_enter
+    done
+}
+
+# ------------------------------------------------------------
+# [Redis] 查看是否已设密码（requirepass）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_redis_view() {
+    check_command redis-cli || { log_error "Redis 客户端未安装"; return 1; }
+    log_info "===== Redis 密码状态 (requirepass) ====="
+    local rp
+    rp=$(redis-cli config get requirepass 2>/dev/null || true)
+    if [[ -n "${rp}" ]]; then
+        local val
+        val=$(echo "${rp}" | tail -n1)
+        if [[ -z "${val}" ]]; then
+            echo "  requirepass 当前为空 → Redis 【未设置密码】"
+        else
+            echo "  requirepass 已设置 → Redis 【已启用密码认证】（值: ${val}）"
+        fi
+    else
+        echo "  无法读取 requirepass（Redis 服务未启动，或当前连接需要 AUTH）"
+        redis-cli ping 2>/dev/null || echo "  redis-cli ping 失败，请确认 Redis 服务状态"
+    fi
+}
+
+# ------------------------------------------------------------
 # [Redis] 设置/修改密码（redis.conf requirepass）
+# 操作前先查看当前密码状态（先看后改）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 pm_redis_passwd() {
     check_root || return 1
     check_command redis-cli || { log_error "Redis 客户端未安装"; return 1; }
+    # 先看后改：先查看当前密码状态
+    pm_redis_view
     local conf="/etc/redis/redis.conf"
     [[ -f "${conf}" ]] || conf="/etc/redis.conf"
     [[ -f "${conf}" ]] || { log_error "未找到 redis.conf"; return 1; }
@@ -161,12 +308,61 @@ pm_redis_passwd() {
 }
 
 # ------------------------------------------------------------
-# [Linux] 修改用户密码（passwd）
+# [Linux用户] 二级菜单（查看在第一位）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_linux_menu() {
+    local act
+    while true; do
+        echo "--------------------------------------"
+        echo "  Linux 用户密码管理"
+        echo "--------------------------------------"
+        echo " 1. 查看用户列表与密码状态"
+        echo " 2. 修改用户密码"
+        echo " 0. 返回上级菜单"
+        echo "--------------------------------------"
+        read -r -p "请选择 (0-2): " act || return 0
+        case "${act}" in
+            1) pm_linux_view ;;
+            2) pm_linux_passwd ;;
+            0) return 0 ;;
+            *) log_error "无效选项: ${act}" ;;
+        esac
+        press_enter
+    done
+}
+
+# ------------------------------------------------------------
+# [Linux用户] 查看用户列表与密码状态
+# 普通用户（UID>=1000）+ passwd -S 密码状态
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_linux_view() {
+    log_info "===== Linux 用户列表与密码状态 ====="
+    echo "== 普通用户 (UID 1000-65533) =="
+    awk -F: '$3>=1000 && $3<65534 {printf "  %-20s UID=%-6s SHELL=%s\n", $1, $3, $7}' /etc/passwd
+    local total
+    total=$(awk -F: '$3>=1000 && $3<65534 {n++} END{print n+0}' /etc/passwd)
+    echo "  （共 ${total} 个普通用户）"
+    echo "== 密码状态 (passwd -S) =="
+    local u
+    for u in $(awk -F: '$3>=1000 && $3<65534 {print $1}' /etc/passwd); do
+        echo "  ${u}: $(passwd -S "${u}" 2>/dev/null || echo '（无法查询，需 root 权限）')"
+    done
+    log_info "提示: 密码状态标记 P=正常可用 NP=未设密码 L=锁定"
+}
+
+# ------------------------------------------------------------
+# [Linux用户] 修改用户密码（passwd，操作前先查看）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 pm_linux_passwd() {
     check_root || return 1
+    # 先看后改：先展示用户列表
+    pm_linux_view
     local user
     read_input user "用户名:" ""
     id "${user}" >/dev/null 2>&1 || { log_error "用户不存在: ${user}"; return 1; }
@@ -176,12 +372,68 @@ pm_linux_passwd() {
 }
 
 # ------------------------------------------------------------
+# [sudo] 二级菜单（查看在第一位）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_sudo_menu() {
+    local act
+    while true; do
+        echo "--------------------------------------"
+        echo "  sudo 权限管理"
+        echo "--------------------------------------"
+        echo " 1. 查看当前具备 sudo 权限的用户/组"
+        echo " 2. sudo 权限恢复"
+        echo " 0. 返回上级菜单"
+        echo "--------------------------------------"
+        read -r -p "请选择 (0-2): " act || return 0
+        case "${act}" in
+            1) pm_sudo_view ;;
+            2) pm_sudo_recover ;;
+            0) return 0 ;;
+            *) log_error "无效选项: ${act}" ;;
+        esac
+        press_enter
+    done
+}
+
+# ------------------------------------------------------------
+# [sudo] 查看当前具备 sudo 权限的用户/组
+# getent group sudo/wheel + /etc/sudoers.d/ 目录
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_sudo_view() {
+    log_info "===== 当前具备 sudo 权限的用户/组 ====="
+    echo "== sudo/wheel 组 =="
+    if getent group sudo >/dev/null 2>&1; then
+        getent group sudo
+    elif getent group wheel >/dev/null 2>&1; then
+        getent group wheel
+    else
+        echo "  （系统无 sudo/wheel 组）"
+    fi
+    echo "== /etc/sudoers 中直接授权 =="
+    grep -E '^\s*[A-Za-z_][A-Za-z0-9_-]*\s+ALL=\(ALL' /etc/sudoers 2>/dev/null | sed 's/^/  /' || echo "  （无直接授权用户）"
+    echo "== /etc/sudoers.d/ 目录 =="
+    if [[ -d /etc/sudoers.d ]]; then
+        ls /etc/sudoers.d/ 2>/dev/null | sed 's/^/  /' || true
+        echo "-- sudoers.d 中的授权规则 --"
+        grep -rhE '^\s*[A-Za-z_][A-Za-z0-9_-]*\s+ALL=\(ALL' /etc/sudoers.d/ 2>/dev/null | sed 's/^/  /' || echo "  （无授权规则）"
+    else
+        echo "  （无 /etc/sudoers.d 目录）"
+    fi
+}
+# ------------------------------------------------------------
 # [sudo] sudo 权限恢复（加入 sudo 组 + visudo -c 检查修复）
+# 操作前先查看当前 sudo 权限（先看后改）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 pm_sudo_recover() {
     check_root || return 1
+    # 先看后改：先展示当前 sudo 权限
+    pm_sudo_view
     local user
     read_input user "需要恢复 sudo 权限的用户名:" ""
     id "${user}" >/dev/null 2>&1 || { log_error "用户不存在: ${user}"; return 1; }
@@ -210,6 +462,75 @@ pm_sudo_recover() {
     # 确保 /etc/sudoers 权限正确
     chmod 440 /etc/sudoers 2>/dev/null || true
     log_success "sudo 权限恢复完成"
+}
+
+# ------------------------------------------------------------
+# [SSH密钥] 二级菜单（查看在第一位，生成/分发均挂载）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_ssh_menu() {
+    local act
+    while true; do
+        echo "--------------------------------------"
+        echo "  SSH 密钥管理"
+        echo "--------------------------------------"
+        echo " 1. 查看本地已有密钥列表"
+        echo " 2. 查看 authorized_keys"
+        echo " 3. SSH 密钥生成"
+        echo " 4. SSH 密钥分发（ssh-copy-id）"
+        echo " 0. 返回上级菜单"
+        echo "--------------------------------------"
+        read -r -p "请选择 (0-4): " act || return 0
+        case "${act}" in
+            1) pm_ssh_keys_view ;;
+            2) pm_ssh_authorized_view ;;
+            3) pm_ssh_keygen ;;
+            4) pm_ssh_distribute ;;
+            0) return 0 ;;
+            *) log_error "无效选项: ${act}" ;;
+        esac
+        press_enter
+    done
+}
+
+# ------------------------------------------------------------
+# [SSH密钥] 查看本地已有密钥列表（id_* 文件与公钥指纹）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_ssh_keys_view() {
+    log_info "===== 本地 SSH 密钥列表 (~/.ssh) ====="
+    if [[ ! -d ~/.ssh ]]; then
+        echo "  ~/.ssh 目录不存在，尚未生成任何密钥"
+        return 0
+    fi
+    echo "== 密钥文件 =="
+    ls -l ~/.ssh/ 2>/dev/null | grep -E 'id_(rsa|ed25519|ecdsa|dsa)' | sed 's/^/  /' || echo "  （未找到 id_* 密钥文件）"
+    echo "== 公钥指纹 =="
+    local f
+    for f in ~/.ssh/id_*.pub; do
+        if [[ -f "${f}" ]]; then
+            ssh-keygen -lf "${f}" 2>/dev/null | sed 's/^/  /' || true
+        fi
+    done
+}
+
+# ------------------------------------------------------------
+# [SSH密钥] 查看 authorized_keys 内容
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_ssh_authorized_view() {
+    log_info "===== ~/.ssh/authorized_keys 内容 ====="
+    if [[ -f ~/.ssh/authorized_keys ]]; then
+        local n
+        n=$(grep -cE '^\s*(ssh-rsa|ssh-ed25519|ecdsa-sha2|ssh-dss)' ~/.ssh/authorized_keys 2>/dev/null || true)
+        echo "（共 ${n} 条已授权公钥）"
+        cat ~/.ssh/authorized_keys 2>/dev/null || true
+    else
+        echo "  （~/.ssh/authorized_keys 不存在）"
+    fi
 }
 
 # ------------------------------------------------------------
@@ -261,33 +582,56 @@ pm_ssh_distribute() {
 }
 
 # ------------------------------------------------------------
-# [密码策略] 检查密码复杂度/有效期/失败锁定策略
+# [密码策略] 二级菜单（查看在第一位）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
-pm_policy_check() {
+pm_policy_menu() {
+    local act
+    while true; do
+        echo "--------------------------------------"
+        echo "  密码策略管理"
+        echo "--------------------------------------"
+        echo " 1. 查看当前密码策略"
+        echo " 2. 修改密码策略"
+        echo " 0. 返回上级菜单"
+        echo "--------------------------------------"
+        read -r -p "请选择 (0-2): " act || return 0
+        case "${act}" in
+            1) pm_policy_view ;;
+            2) pm_policy_set ;;
+            0) return 0 ;;
+            *) log_error "无效选项: ${act}" ;;
+        esac
+        press_enter
+    done
+}
+
+# ------------------------------------------------------------
+# [密码策略] 查看当前密码策略（复杂度/有效期/失败锁定）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pm_policy_view() {
     check_root || return 1
-    echo "===== 密码策略检查 (Password Policy) ====="
+    log_info "===== 密码策略检查 (Password Policy) ====="
     echo ""
     echo "== 1. 密码复杂度 (pam_pwquality / pwquality) =="
     local pq="/etc/security/pwquality.conf"
     if [[ -f "${pq}" ]]; then
-        grep -vE '^\s*#|^\s*$' "${pq}" || echo "  （未自定义，使用系统默认）"
+        grep -vE '^\s*#|^\s*$' "${pq}" | sed 's/^/  /' || echo "  （未自定义，使用系统默认）"
+    else
+        echo "  （未找到 ${pq}）"
     fi
     echo ""
     echo "== 2. 密码有效期 (/etc/login.defs) =="
-    grep -E 'PASS_MAX_DAYS|PASS_MIN_DAYS|PASS_WARN_AGE' /etc/login.defs | grep -v '^#'
+    grep -E 'PASS_MAX_DAYS|PASS_MIN_DAYS|PASS_WARN_AGE' /etc/login.defs 2>/dev/null | grep -v '^#' | sed 's/^/  /' || echo "  （无配置项）"
     echo ""
     echo "== 3. 失败锁定策略 (pam_faillock / pam_tally2) =="
     if check_command faillock; then
         faillock 2>/dev/null | head -n 10 || true
     else
-        grep -rE 'pam_faillock|pam_tally' /etc/pam.d/ 2>/dev/null | head -n 5 || echo "  未启用失败锁定"
-    fi
-    echo ""
-    read_input do_set "是否交互修改策略? [y/n]:" "n"
-    if [[ "${do_set}" == "y" ]]; then
-        pm_policy_set
+        grep -rE 'pam_faillock|pam_tally' /etc/pam.d/ 2>/dev/null | head -n 5 | sed 's/^/  /' || echo "  未启用失败锁定"
     fi
 }
 

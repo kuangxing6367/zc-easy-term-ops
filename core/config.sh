@@ -24,6 +24,16 @@ MYSQL_VERSION="${MYSQL_VERSION:-8.0}"
 MYSQL_DATA_DIR="${MYSQL_DATA_DIR:-/data/mysql}"
 DOCKER_REGISTRY="${DOCKER_REGISTRY:-docker.io}"
 
+# ---- 工具箱版本与更新源配置（自我更新模块使用） ----
+# 工具箱整体版本号（升级时由自我更新模块自动更新）
+ZETOPS_VERSION="${ZETOPS_VERSION:-1.1.0}"
+# GitHub 仓库地址（自我更新拉取来源）
+ZETOPS_REPO_URL="${ZETOPS_REPO_URL:-https://github.com/kuangxing6367/zc-easy-term-ops.git}"
+# 更新分支
+ZETOPS_UPDATE_BRANCH="${ZETOPS_UPDATE_BRANCH:-main}"
+# GitHub 加速镜像前缀（国内加速，如 https://ghfast.top/ ；留空=直连 GitHub）
+ZETOPS_GITHUB_MIRROR="${ZETOPS_GITHUB_MIRROR:-}"
+
 # API 节点配置
 API_BASE_URL=""
 API_TIMEOUT=10

@@ -3,16 +3,17 @@
 # 文件：modules/04_database.sh
 # 功能：数据库管理 [Database Management]
 # 作者：zc 团队
-# 版本：1.0.0
-# 日期：2026-08-05
+# 版本：1.1.0
+# 日期：2026-08-06
 # 说明：MySQL/MariaDB、PostgreSQL、Redis、MongoDB 的
 #       安装/建库/用户/备份恢复/高可用/性能调优
+#       先看后改：各管理菜单首项提供状态/列表/备份查看
 # ============================================================
 set -euo pipefail
 
 module_name="数据库管理"
 module_short="database"
-module_version="1.0.0"
+module_version="1.1.0"
 
 # 默认配置（可被 ~/.zetops/zetops.conf 覆盖）
 MYSQL_VERSION="${MYSQL_VERSION:-8.0}"
@@ -56,32 +57,93 @@ mysql_manager() {
         echo "======================================"
         echo "  [MySQL管理] 子菜单"
         echo "======================================"
-        echo " 1. 安装 MySQL (版本${MYSQL_VERSION})"
-        echo " 2. 安全初始化 (root密码/删匿名用户)"
-        echo " 3. 创建数据库/用户/授权"
-        echo " 4. 数据备份 (mysqldump)"
-        echo " 5. 数据恢复"
-        echo " 6. 慢查询日志分析"
-        echo " 7. 主从复制配置 (Master-Slave)"
-        echo " 8. 性能调优 (my.cnf)"
+        echo " 1. 查看运行状态/连接数"
+        echo " 2. 查看数据库列表"
+        echo " 3. 查看用户列表"
+        echo " 4. 查看备份列表"
+        echo " 5. 安装 MySQL (版本${MYSQL_VERSION})"
+        echo " 6. 安全初始化 (root密码/删匿名用户)"
+        echo " 7. 创建数据库/用户/授权"
+        echo " 8. 数据备份 (mysqldump)"
+        echo " 9. 数据恢复"
+        echo "10. 慢查询日志分析"
+        echo "11. 主从复制配置 (Master-Slave)"
+        echo "12. 性能调优 (my.cnf)"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-8) [q=返回]: " c || return
+        read -r -p "请选择 (0-12) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
-            1) mysql_install ;;
-            2) mysql_secure_init ;;
-            3) mysql_create_db ;;
-            4) mysql_backup ;;
-            5) mysql_restore ;;
-            6) mysql_slowlog_analyze ;;
-            7) mysql_replication ;;
-            8) mysql_tune ;;
+            1) mysql_view_status ;;
+            2) mysql_view_dbs ;;
+            3) mysql_view_users ;;
+            4) mysql_view_backups ;;
+            5) mysql_install ;;
+            6) mysql_secure_init ;;
+            7) mysql_create_db ;;
+            8) mysql_backup ;;
+            9) mysql_restore ;;
+            10) mysql_slowlog_analyze ;;
+            11) mysql_replication ;;
+            12) mysql_tune ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
         press_enter
     done
+}
+
+# ------------------------------------------------------------
+# [MySQL] 查看运行状态/连接数
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+mysql_view_status() {
+    check_command mysql || { log_error "mysql 客户端未安装，请先安装（菜单 5）"; return 1; }
+    log_info "MySQL 运行状态与连接数 (mysqladmin status):"
+    if check_command mysqladmin; then
+        mysqladmin status 2>/dev/null || log_warning "mysqladmin status 失败（可能需要 root 密码），改用 SHOW STATUS ..."
+    fi
+    log_info "当前连接数 (Threads_connected):"
+    mysql -uroot -e "SHOW STATUS LIKE 'Threads_connected';" 2>/dev/null \
+        || { log_error "无法连接 MySQL（请检查服务状态与 root 密码）"; return 1; }
+    log_info "当前连接进程 (SHOW PROCESSLIST):"
+    mysql -uroot -e "SHOW PROCESSLIST;" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------
+# [MySQL] 查看数据库列表
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+mysql_view_dbs() {
+    check_command mysql || { log_error "mysql 客户端未安装，请先安装（菜单 5）"; return 1; }
+    log_info "MySQL 数据库列表 (SHOW DATABASES):"
+    mysql -uroot -e "SHOW DATABASES;" 2>/dev/null \
+        || log_error "无法连接 MySQL（请检查服务状态与 root 密码）"
+}
+
+# ------------------------------------------------------------
+# [MySQL] 查看用户列表
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+mysql_view_users() {
+    check_command mysql || { log_error "mysql 客户端未安装，请先安装（菜单 5）"; return 1; }
+    log_info "MySQL 用户列表 (mysql.user):"
+    mysql -uroot -e "SELECT user,host FROM mysql.user;" 2>/dev/null \
+        || log_error "无法连接 MySQL（请检查服务状态与 root 密码）"
+}
+
+# ------------------------------------------------------------
+# [MySQL] 查看备份列表
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+mysql_view_backups() {
+    log_info "MySQL 备份文件列表 (${BACKUP_DIR}/mysql):"
+    ls -lht "${BACKUP_DIR}/mysql" 2>/dev/null \
+        || log_warning "备份目录不存在: ${BACKUP_DIR}/mysql（尚未执行过备份）"
 }
 
 # ------------------------------------------------------------
@@ -123,6 +185,7 @@ mysql_install() {
 # ------------------------------------------------------------
 mysql_secure_init() {
     check_root || return 1
+    check_command mysql || { log_error "mysql 客户端未安装"; return 1; }
     local pw
     read_input pw "设置 root 密码(留空则使用自动生成):" ""
     local pw_arg=""
@@ -149,6 +212,7 @@ mysql_secure_init() {
 # ------------------------------------------------------------
 mysql_create_db() {
     check_root || return 1
+    check_command mysql || { log_error "mysql 客户端未安装"; return 1; }
     local db user host pw rootpw
     read_input db "数据库名(Database):" ""
     read_input user "用户名:" ""
@@ -175,6 +239,7 @@ SQL
 # ------------------------------------------------------------
 mysql_backup() {
     check_root || return 1
+    check_command mysqldump || { log_error "mysqldump 未安装"; return 1; }
     local rootpw backup_dir
     read_input rootpw "MySQL root 密码:" ""
     backup_dir="${BACKUP_DIR}/mysql"
@@ -185,7 +250,8 @@ mysql_backup() {
     show_spinner "mysqldump 全库备份中..."
     mysqldump -uroot -p"${rootpw}" --all-databases --single-transaction 2>/dev/null | gzip > "${backup_file}"
     stop_spinner
-    log_success "备份完成: ${backup_file}"
+    log_success "备份完成，备份位置: ${backup_file}"
+    log_info "可通过菜单 4 查看备份列表"
 }
 
 # ------------------------------------------------------------
@@ -195,7 +261,10 @@ mysql_backup() {
 # ------------------------------------------------------------
 mysql_restore() {
     check_root || return 1
+    check_command mysql || { log_error "mysql 客户端未安装"; return 1; }
     local rootpw file
+    log_info "当前可用备份文件:"
+    ls -lht "${BACKUP_DIR}/mysql" 2>/dev/null || log_warning "备份目录不存在: ${BACKUP_DIR}/mysql"
     read_input rootpw "MySQL root 密码:" ""
     read_input file "备份文件路径(.sql.gz):" ""
     [[ -f "${file}" ]] || { log_error "备份文件不存在"; return 1; }
@@ -211,6 +280,7 @@ mysql_restore() {
 # ------------------------------------------------------------
 mysql_slowlog_analyze() {
     check_root || return 1
+    check_command mysql || { log_error "mysql 客户端未安装"; return 1; }
     mysql -uroot -e "SHOW VARIABLES LIKE 'slow_query_log%';" 2>/dev/null || true
     local slowlog
     slowlog=$(mysql -uroot -N -e "SELECT @@slow_query_log_file;" 2>/dev/null)
@@ -229,10 +299,14 @@ mysql_slowlog_analyze() {
 # ------------------------------------------------------------
 mysql_replication() {
     check_root || return 1
+    check_command mysql || { log_error "mysql 客户端未安装"; return 1; }
     local role
     read_input role "角色 [1=主库Master 2=从库Slave]:" ""
     case "${role}" in
         1)
+            log_info "当前复制相关配置 (server-id/log-bin/binlog-format):"
+            grep -E "^(server-id|log-bin|binlog-format)" /etc/mysql/my.cnf /etc/my.cnf 2>/dev/null \
+                || log_info "未发现相关配置，将自动追加到 my.cnf"
             grep -q "server-id" /etc/mysql/my.cnf 2>/dev/null || {
                 echo -e "[mysqld]\nserver-id=1\nlog-bin=mysql-bin\nbinlog-format=ROW" >> /etc/mysql/my.cnf 2>/dev/null \
                 || echo -e "[mysqld]\nserver-id=1\nlog-bin=mysql-bin\nbinlog-format=ROW" >> /etc/my.cnf
@@ -265,6 +339,10 @@ mysql_replication() {
 # ------------------------------------------------------------
 mysql_tune() {
     check_root || return 1
+    check_command mysql || { log_error "mysql 客户端未安装"; return 1; }
+    log_info "当前关键参数（调优前）:"
+    mysql -uroot -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size'; SHOW VARIABLES LIKE 'max_connections';" 2>/dev/null \
+        || log_warning "无法查询当前参数（服务未启动或需要密码）"
     local mem
     read_input mem "服务器物理内存(GB):" "4"
     [[ "${mem}" =~ ^[0-9]+$ ]] || { log_error "无效数字"; return 1; }
@@ -296,26 +374,67 @@ pg_manager() {
         echo "======================================"
         echo "  [PostgreSQL管理] 子菜单"
         echo "======================================"
-        echo " 1. 安装 PostgreSQL"
-        echo " 2. 创建数据库/用户"
-        echo " 3. 配置 pg_hba.conf (访问控制)"
-        echo " 4. 备份 (pg_dump)"
-        echo " 5. 恢复"
+        echo " 1. 查看服务状态"
+        echo " 2. 查看数据库列表"
+        echo " 3. 查看备份列表"
+        echo " 4. 安装 PostgreSQL"
+        echo " 5. 创建数据库/用户"
+        echo " 6. 配置 pg_hba.conf (访问控制)"
+        echo " 7. 备份 (pg_dump)"
+        echo " 8. 恢复"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-5) [q=返回]: " c || return
+        read -r -p "请选择 (0-8) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
-            1) pg_install ;;
-            2) pg_create_db ;;
-            3) pg_hba_config ;;
-            4) pg_backup ;;
-            5) pg_restore ;;
+            1) pg_view_status ;;
+            2) pg_view_dbs ;;
+            3) pg_view_backups ;;
+            4) pg_install ;;
+            5) pg_create_db ;;
+            6) pg_hba_config ;;
+            7) pg_backup ;;
+            8) pg_restore ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
         press_enter
     done
+}
+
+# ------------------------------------------------------------
+# [PostgreSQL] 查看服务状态
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pg_view_status() {
+    log_info "PostgreSQL 服务状态:"
+    systemctl status postgresql --no-pager 2>/dev/null \
+        || log_error "postgresql 服务未运行或未安装（请先安装，菜单 4）"
+}
+
+# ------------------------------------------------------------
+# [PostgreSQL] 查看数据库列表
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pg_view_dbs() {
+    check_command psql || { log_error "psql 客户端未安装，请先安装 PostgreSQL（菜单 4）"; return 1; }
+    log_info "PostgreSQL 数据库列表:"
+    su - postgres -c "psql -l" 2>/dev/null \
+        || runuser -u postgres -- psql -l 2>/dev/null \
+        || log_error "无法列出数据库（请检查服务状态）"
+}
+
+# ------------------------------------------------------------
+# [PostgreSQL] 查看备份列表
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+pg_view_backups() {
+    log_info "PostgreSQL 备份文件列表 (${BACKUP_DIR}/postgresql):"
+    ls -lht "${BACKUP_DIR}/postgresql" 2>/dev/null \
+        || log_warning "备份目录不存在: ${BACKUP_DIR}/postgresql（尚未执行过备份）"
 }
 
 # ------------------------------------------------------------
@@ -364,6 +483,8 @@ pg_hba_config() {
     local hba="/etc/postgresql/$(ls /etc/postgresql 2>/dev/null | tail -n1)/main/pg_hba.conf"
     [[ -f "${hba}" ]] || hba="/var/lib/pgsql/data/pg_hba.conf"
     [[ -f "${hba}" ]] || { log_error "未找到 pg_hba.conf"; return 1; }
+    log_info "当前 pg_hba.conf 授权规则:"
+    grep -E "^(host|local)" "${hba}" 2>/dev/null | tail -n 10 || true
     local network method
     read_input network "允许网段(如 192.168.1.0/24):" ""
     read_input method "认证方式 [scram-sha-256/md5/trust]:" "scram-sha-256"
@@ -379,6 +500,7 @@ pg_hba_config() {
 # ------------------------------------------------------------
 pg_backup() {
     check_root || return 1
+    check_command psql || { log_error "psql 客户端未安装"; return 1; }
     local db
     read_input db "数据库名(留空=全库):" ""
     local dir="${BACKUP_DIR}/postgresql"
@@ -391,7 +513,8 @@ pg_backup() {
         su - postgres -c "pg_dumpall" > "${file}" 2>/dev/null \
             || runuser -u postgres -- pg_dumpall > "${file}"
     fi
-    log_success "备份完成: ${file}"
+    log_success "备份完成，备份位置: ${file}"
+    log_info "可通过菜单 3 查看备份列表"
 }
 
 # ------------------------------------------------------------
@@ -402,6 +525,8 @@ pg_backup() {
 pg_restore() {
     check_root || return 1
     local file
+    log_info "当前可用备份文件:"
+    ls -lht "${BACKUP_DIR}/postgresql" 2>/dev/null || log_warning "备份目录不存在: ${BACKUP_DIR}/postgresql"
     read_input file "备份文件路径(.dump):" ""
     [[ -f "${file}" ]] || { log_error "文件不存在"; return 1; }
     confirm_action "恢复 PostgreSQL 数据" || return 1
@@ -419,24 +544,38 @@ redis_manager() {
         echo "======================================"
         echo "  [Redis管理] 子菜单"
         echo "======================================"
-        echo " 1. 安装 Redis"
-        echo " 2. 持久化配置 (RDB/AOF)"
-        echo " 3. 主从/哨兵/集群配置"
-        echo " 4. 内存淘汰策略设置"
+        echo " 1. 查看运行状态"
+        echo " 2. 安装 Redis"
+        echo " 3. 持久化配置 (RDB/AOF)"
+        echo " 4. 主从/哨兵/集群配置"
+        echo " 5. 内存淘汰策略设置"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-4) [q=返回]: " c || return
+        read -r -p "请选择 (0-5) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
-            1) redis_install ;;
-            2) redis_persistence ;;
-            3) redis_ha ;;
-            4) redis_memory_policy ;;
+            1) redis_view_status ;;
+            2) redis_install ;;
+            3) redis_persistence ;;
+            4) redis_ha ;;
+            5) redis_memory_policy ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
         press_enter
     done
+}
+
+# ------------------------------------------------------------
+# [Redis] 查看运行状态
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+redis_view_status() {
+    check_command redis-cli || { log_error "redis-cli 未安装，请先安装 Redis（菜单 2）"; return 1; }
+    log_info "Redis 运行状态 (INFO 关键项):"
+    redis-cli INFO 2>/dev/null | grep -E "^(redis_version|connected_clients|used_memory_human|rdb_last_save|aof_enabled):" \
+        || log_error "无法连接 Redis（请检查服务是否启动）"
 }
 
 # ------------------------------------------------------------
@@ -463,6 +602,9 @@ redis_persistence() {
     local conf="/etc/redis/redis.conf"
     [[ -f "${conf}" ]] || conf="/etc/redis.conf"
     [[ -f "${conf}" ]] || { log_error "未找到 redis.conf"; return 1; }
+    log_info "当前持久化配置 (save/appendonly/appendfsync):"
+    grep -E "^(save |appendonly|appendfsync)" "${conf}" 2>/dev/null | head -n 10 \
+        || log_info "未发现 save/appendonly 配置项（使用默认值）"
     local mode
     read_input mode "持久化模式 [1=RDB 2=AOF 3=两者都开]:" "2"
     cp "${conf}" "${conf}.bak.$(date +%s)"
@@ -520,9 +662,12 @@ EOF
 # ------------------------------------------------------------
 redis_memory_policy() {
     check_root || return 1
+    check_command redis-cli || { log_error "redis-cli 未安装"; return 1; }
     local conf="/etc/redis/redis.conf"
     [[ -f "${conf}" ]] || conf="/etc/redis.conf"
-    echo "当前策略: $(redis-cli config get maxmemory-policy 2>/dev/null | tail -n1)"
+    log_info "当前内存策略与最大内存（修改前）:"
+    redis-cli config get maxmemory-policy 2>/dev/null || true
+    redis-cli config get maxmemory 2>/dev/null || true
     echo "可选策略: noeviction / allkeys-lru / volatile-lru / allkeys-random / volatile-ttl"
     local policy maxmem
     read_input policy "设置策略:" "allkeys-lru"
@@ -545,24 +690,81 @@ mongo_manager() {
         echo "======================================"
         echo "  [MongoDB管理] 子菜单"
         echo "======================================"
-        echo " 1. 安装 MongoDB"
-        echo " 2. 副本集配置 (Replica Set)"
-        echo " 3. 启用用户认证"
-        echo " 4. 备份/恢复"
+        echo " 1. 查看数据库列表"
+        echo " 2. 查看副本集状态"
+        echo " 3. 查看备份列表"
+        echo " 4. 安装 MongoDB"
+        echo " 5. 副本集配置 (Replica Set)"
+        echo " 6. 启用用户认证"
+        echo " 7. 备份/恢复"
         echo " 0. 返回上一级"
         echo "======================================"
-        read -r -p "请选择 (0-4) [q=返回]: " c || return
+        read -r -p "请选择 (0-7) [q=返回]: " c || return
         [[ "${c}" == "q" ]] && return
         case "${c}" in
-            1) mongo_install ;;
-            2) mongo_replica_set ;;
-            3) mongo_auth ;;
-            4) mongo_backup ;;
+            1) mongo_view_dbs ;;
+            2) mongo_view_repl ;;
+            3) mongo_view_backups ;;
+            4) mongo_install ;;
+            5) mongo_replica_set ;;
+            6) mongo_auth ;;
+            7) mongo_backup ;;
             0) return ;;
             *) log_error "无效选项" ;;
         esac
         press_enter
     done
+}
+
+# ------------------------------------------------------------
+# [MongoDB] 查看数据库列表（mongosh 优先，失败降级 mongo）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+mongo_view_dbs() {
+    if check_command mongosh; then
+        log_info "MongoDB 数据库列表:"
+        mongosh --quiet --eval 'db.adminCommand("listDatabases")' 2>/dev/null \
+            || log_error "无法连接 MongoDB（请检查服务状态）"
+    elif check_command mongo; then
+        log_info "MongoDB 数据库列表:"
+        mongo --quiet --eval 'db.adminCommand("listDatabases")' 2>/dev/null \
+            || log_error "无法连接 MongoDB（请检查服务状态）"
+    else
+        log_error "mongosh/mongo 客户端未安装，请先安装 MongoDB（菜单 4）"
+        return 1
+    fi
+}
+
+# ------------------------------------------------------------
+# [MongoDB] 查看副本集状态（rs.status().members 摘要）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+mongo_view_repl() {
+    if check_command mongosh; then
+        log_info "MongoDB 副本集状态 (rs.status().members 摘要):"
+        mongosh --quiet --eval 'var s=rs.status(); s.members.forEach(m => print(m.name, "| stateStr:", m.stateStr, "| health:", m.health))' 2>/dev/null \
+            || log_error "查询副本集失败（可能未初始化副本集）"
+    elif check_command mongo; then
+        log_info "MongoDB 副本集状态 (rs.status().members 摘要):"
+        mongo --quiet --eval 'var s=rs.status(); s.members.forEach(m => print(m.name, "| stateStr:", m.stateStr, "| health:", m.health))' 2>/dev/null \
+            || log_error "查询副本集失败（可能未初始化副本集）"
+    else
+        log_error "mongosh/mongo 客户端未安装，请先安装 MongoDB（菜单 4）"
+        return 1
+    fi
+}
+
+# ------------------------------------------------------------
+# [MongoDB] 查看备份列表
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+mongo_view_backups() {
+    log_info "MongoDB 备份目录列表 (${BACKUP_DIR}/mongodb):"
+    ls -lht "${BACKUP_DIR}/mongodb" 2>/dev/null \
+        || log_warning "备份目录不存在: ${BACKUP_DIR}/mongodb（尚未执行过备份）"
 }
 
 # ------------------------------------------------------------
@@ -628,15 +830,17 @@ mongo_auth() {
 # ------------------------------------------------------------
 mongo_backup() {
     check_root || return 1
+    check_command mongodump || { log_error "mongodump 未安装"; return 1; }
     local db dir
     read_input db "数据库名(留空=全部):" ""
     dir="${BACKUP_DIR}/mongodb"
     mkdir -p "${dir}"
     if [[ -n "${db}" ]]; then
-        mongodump --db "${db}" --out "${dir}" && log_success "备份完成: ${dir}/${db}"
+        mongodump --db "${db}" --out "${dir}" && log_success "备份完成，备份位置: ${dir}/${db}"
     else
-        mongodump --out "${dir}" && log_success "全库备份完成: ${dir}"
+        mongodump --out "${dir}" && log_success "全库备份完成，备份位置: ${dir}"
     fi
+    log_info "可通过菜单 3 查看备份列表"
 }
 
 # ---- 独立执行入口 ----

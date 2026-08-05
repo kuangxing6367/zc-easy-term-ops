@@ -23,6 +23,9 @@ An interactive, modular Linux operations toolbox (ZETOPS). Provides multi-level 
 | 09 备份灾备 | tar/rsync 备份、增量备份、远程同步(免密)、数据库备份脚本、定时任务、LVM 快照 |
 | 10 开发部署 | pyenv/nvm/OpenJDK/Go/Rust、Git、Jenkins/SonarQube、Webhook、应用一键部署 |
 | 11 密码权限 | MySQL/PostgreSQL/Redis 密码重置、Linux 密码、sudo 恢复、SSH 密钥生成分发、密码策略检查 |
+| 12 自我更新 | 查看版本、检查更新、从 GitHub 拉取升级（支持国内加速镜像）、更新日志 |
+
+> 每个模块均遵循"先看后改"：管理类操作前可随时查看当前状态/规则/列表（如 ufw 查看已开放端口、备份列表、数据库用户等）。
 
 ## 快速开始 | Quick Start
 
@@ -50,7 +53,7 @@ zc-easy-term-ops/
 ├── install.sh         # 一键安装（入口）
 ├── zetops             # 主程序入口
 ├── core/              # 核心框架（main/menu/logger/utils/config）
-├── modules/           # 11 个功能模块（统一接口，可单独执行）
+├── modules/           # 12 个功能模块（统一接口，可单独执行）
 ├── plugins/           # 插件目录（自动扫描动态加载）
 ├── config/            # 配置模板（zetops.conf / api.conf）
 └── docs/              # 文档（INSTALL/MODULES/CHANGELOG）
