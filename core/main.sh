@@ -164,6 +164,8 @@ main() {
     # shellcheck source=/dev/null
     source "${ZETOPS_ROOT}/core/config.sh"
     # shellcheck source=/dev/null
+    source "${ZETOPS_ROOT}/core/detect_env.sh"
+    # shellcheck source=/dev/null
     source "${ZETOPS_ROOT}/core/menu.sh"
 
     log_init

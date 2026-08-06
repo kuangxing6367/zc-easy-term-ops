@@ -5,19 +5,23 @@
 # 作者：zc 团队
 # 版本：1.0.0
 # 日期：2026-08-05
-# 用法：sudo bash install.sh [--prefix /opt/zc-easy-term-ops]
+# 用法：sudo bash install.sh [--prefix /opt/zc-easy-term-ops] [--uninstall]
 # ============================================================
 set -euo pipefail
 
 # 默认安装目录
 INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/zc-easy-term-ops}"
+DO_UNINSTALL=0
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix) INSTALL_PREFIX="$2"; shift 2 ;;
+        --uninstall) DO_UNINSTALL=1; shift ;;
         --help|-h)
-            echo "用法: sudo bash install.sh [--prefix /opt/zc-easy-term-ops]"
+            echo "用法: sudo bash install.sh [--prefix DIR] [--uninstall]"
+            echo "  --prefix DIR   指定安装目录（默认 /opt/zc-easy-term-ops）"
+            echo "  --uninstall    卸载 ZETOPS（询问是否保留配置/日志）"
             exit 0
             ;;
         *) echo "未知参数: $1"; exit 1 ;;
@@ -45,6 +49,62 @@ fi
 KERNEL_VERSION=$(uname -r)
 ARCH=$(uname -m)
 install_echo "发行版: ${OS_ID} | 内核: ${KERNEL_VERSION} | 架构: ${ARCH}"
+
+# ------------------------------------------------------------
+# 卸载模式（--uninstall）
+# ------------------------------------------------------------
+if [[ "${DO_UNINSTALL}" == "1" ]]; then
+    install_echo "开始卸载 ZETOPS ..."
+    SYMLINK="/usr/local/bin/zetops"
+    local_ans=""
+
+    # 删除软链接
+    if [[ -L "${SYMLINK}" || -f "${SYMLINK}" ]]; then
+        rm -f "${SYMLINK}"
+        install_ok "已删除软链接 ${SYMLINK}"
+    else
+        install_echo "软链接 ${SYMLINK} 不存在，跳过"
+    fi
+
+    # 删除安装目录
+    if [[ -d "${INSTALL_PREFIX}" ]]; then
+        rm -rf "${INSTALL_PREFIX}"
+        install_ok "已删除安装目录 ${INSTALL_PREFIX}"
+    else
+        install_echo "安装目录 ${INSTALL_PREFIX} 不存在，跳过"
+    fi
+
+    # 询问是否删除配置目录
+    if [[ -d "${HOME}/.zetops" ]]; then
+        echo -n "[INSTALL] 是否删除配置目录 ~/.zetops? [y/N]: "
+        read -r local_ans || local_ans="n"
+        if [[ "${local_ans}" == "y" || "${local_ans}" == "Y" ]]; then
+            rm -rf "${HOME}/.zetops"
+            install_ok "已删除配置目录 ~/.zetops"
+        else
+            install_echo "保留配置目录 ~/.zetops"
+        fi
+    fi
+
+    # 询问是否删除日志目录
+    if [[ -d "/var/log/zetops" ]]; then
+        echo -n "[INSTALL] 是否删除日志目录 /var/log/zetops? [y/N]: "
+        read -r local_ans || local_ans="n"
+        if [[ "${local_ans}" == "y" || "${local_ans}" == "Y" ]]; then
+            rm -rf /var/log/zetops
+            install_ok "已删除日志目录 /var/log/zetops"
+        else
+            install_echo "保留日志目录 /var/log/zetops"
+        fi
+    fi
+
+    # 清理锁文件
+    rm -f /var/run/zetops.lock 2>/dev/null || true
+
+    echo ""
+    install_ok "ZETOPS 卸载完成"
+    exit 0
+fi
 
 # ------------------------------------------------------------
 # 2. 检查并安装必需依赖
@@ -161,4 +221,4 @@ install_ok " 日志文件: /var/log/zetops/zetops.log"
 install_ok "=============================================="
 echo ""
 install_echo "现在直接输入 zetops 即可启动工具箱"
-install_echo "如需卸载：rm -rf ${INSTALL_PREFIX} ${SYMLINK} ~/.zetops"
+install_echo "如需卸载：sudo bash install.sh --uninstall"

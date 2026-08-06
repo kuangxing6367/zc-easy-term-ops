@@ -24,6 +24,16 @@ An interactive, modular Linux operations toolbox (ZETOPS). Provides multi-level 
 | 10 开发部署 | pyenv/nvm/OpenJDK/Go/Rust、Git、Jenkins/SonarQube、Webhook、应用一键部署 |
 | 11 密码权限 | MySQL/PostgreSQL/Redis 密码重置、Linux 密码、sudo 恢复、SSH 密钥生成分发、密码策略检查 |
 | 12 自我更新 | 查看版本、检查更新、从 GitHub 拉取升级（支持国内加速镜像）、更新日志 |
+| 13 AI 智能助手 | 自然语言运维诊断（纯Bash规则引擎零依赖），502/磁盘/CPU/内存/网络/Docker/MySQL/端口 9大场景，交互式修复+验证，多回退策略 |
+| 14 安全基线加固 | CIS 风格基线扫描（空密码/UID=0/权限/SUID/防火墙/SSH/密码策略），逐项确认一键加固 |
+| 15 硬件信息查看 | CPU/内存/磁盘(含smartctl健康度)/网卡/PCI/系统信息一键汇总，纯命令零依赖 |
+| 16 操作审计日志 | 时间\|用户\|模块\|操作\|结果 审计记录（只追加），按用户/模块筛选、统计概览，全局 audit_log() 可被任何模块调用 |
+| 17 站点与SSL管理 | 站点清单 sites.ini、增删改查、证书到期倒计时批量检测（<15天红色告警）、certbot/手动续期、HTTP健康检查、Nginx站点配置生成、404错误页设置 |
+| 18 统一数据库管理 | MySQL/PostgreSQL/Redis/MongoDB 实例清单 databases.ini、多回退连接测试、统一备份恢复、慢查询、性能诊断 |
+| 19 容灾回退链 | 回退链配置（primary→fallback_N）、链式降级执行（自动重试）、--dry-run 演练、Watchdog 自动切换、回退历史 |
+| 20 文件管理器 | 类Windows资源管理器：目录导航/分页列表(大小/权限/时间)、目录树查看(t)、查看/编辑/复制/移动/重命名/删除(危险保护)、chmod、tar/zip压缩解压、搜索、书签 |
+| 21 FTP服务管理 | vsftpd 安装/启停/状态总览、FTP用户增删/锁解锁、匿名开关、端口/限速/chroot/被动端口配置、语法校验+连接测试 |
+| 22 配置文件中心 | Nginx/Apache/MySQL/Redis/SSH/系统常用配置自动探测、查看/编辑(自动备份)、备份恢复(一键回滚)、语法校验 |
 
 > 每个模块均遵循"先看后改"：管理类操作前可随时查看当前状态/规则/列表（如 ufw 查看已开放端口、备份列表、数据库用户等）。
 

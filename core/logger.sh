@@ -49,7 +49,30 @@ log_init() {
         LOG_FILE="${LOG_DIR}/zetops.log"
         mkdir -p "${LOG_DIR}"
     fi
-    : > /dev/null
+    touch "${LOG_FILE}" 2>/dev/null || true
+    # 日志轮转：超过 10MB 时自动轮转，保留 5 个归档
+    _log_rotate
+}
+
+# ------------------------------------------------------------
+# 日志轮转（超过 10MB 时轮转，保留 5 个归档 .1~.5）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+_log_rotate() {
+    [[ -f "${LOG_FILE}" ]] || return 0
+    local max_size=10485760  # 10MB
+    local file_size
+    file_size=$(stat -c%s "${LOG_FILE}" 2>/dev/null || echo 0)
+    (( file_size < max_size )) && return 0
+
+    # 轮转：删除最旧归档，逐级重命名，当前日志 → .1
+    local i
+    [[ -f "${LOG_FILE}.5" ]] && rm -f "${LOG_FILE}.5"
+    for ((i = 4; i >= 1; i--)); do
+        [[ -f "${LOG_FILE}.${i}" ]] && mv "${LOG_FILE}.${i}" "${LOG_FILE}.$((i + 1))"
+    done
+    mv "${LOG_FILE}" "${LOG_FILE}.1"
     touch "${LOG_FILE}" 2>/dev/null || true
 }
 
