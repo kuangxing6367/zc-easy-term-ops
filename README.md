@@ -34,6 +34,10 @@ An interactive, modular Linux operations toolbox (ZETOPS). Provides multi-level 
 | 20 文件管理器 | 类Windows资源管理器：目录导航/分页列表(大小/权限/时间)、目录树查看(t)、查看/编辑/复制/移动/重命名/删除(危险保护)、chmod、tar/zip压缩解压、搜索、书签 |
 | 21 FTP服务管理 | vsftpd 安装/启停/状态总览、FTP用户增删/锁解锁、匿名开关、端口/限速/chroot/被动端口配置、语法校验+连接测试 |
 | 22 配置文件中心 | Nginx/Apache/MySQL/Redis/SSH/系统常用配置自动探测、查看/编辑(自动备份)、备份恢复(一键回滚)、语法校验 |
+| 23 运维任务编排 | 多步骤任务定义(.ztask)/交互创建/进度执行(3种失败策略)/执行历史，发布=git pull→构建→重启→健康检查 |
+| 24 批量主机运维 | 主机清单 hosts.ini(分组)、并行SSH批量执行、scp批量上传/下载、连通性测试、结果✅/❌汇总 |
+| 25 每日巡检报告 | 负载/磁盘/内存/失败服务/SSL证书到期一键采集，危险项自动标红，crontab定时巡检(每日08:00)，历史报告留存 |
+| 26 计划任务管理 | crontab可视化：增删改查/暂停恢复/手动执行/清空，时间表达式自动翻译中文(每天08:00/每5分钟)，快捷模板 |
 
 > 每个模块均遵循"先看后改"：管理类操作前可随时查看当前状态/规则/列表（如 ufw 查看已开放端口、备份列表、数据库用户等）。
 
@@ -63,7 +67,7 @@ zc-easy-term-ops/
 ├── install.sh         # 一键安装（入口）
 ├── zetops             # 主程序入口
 ├── core/              # 核心框架（main/menu/logger/utils/config）
-├── modules/           # 12 个功能模块（统一接口，可单独执行）
+├── modules/           # 26 个功能模块（统一接口，可单独执行）
 ├── plugins/           # 插件目录（自动扫描动态加载）
 ├── config/            # 配置模板（zetops.conf / api.conf）
 └── docs/              # 文档（INSTALL/MODULES/CHANGELOG）

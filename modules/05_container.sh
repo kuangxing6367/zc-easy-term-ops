@@ -160,7 +160,7 @@ docker_images() {
     local act
     log_info "当前镜像列表:"
     docker images
-    read_input act "操作 [1=拉取 2=删除 3=构建 0=仅查看返回]:" "0"
+    read_input act "操作 [1=拉取 2=删除 3=构建 4=配置加速器 0=仅查看返回]:" "0"
     case "${act}" in
         1)
             local img
@@ -184,9 +184,66 @@ docker_images() {
             docker build -t "${tag}" "${dir}"
             log_success "镜像构建完成: ${tag}"
             ;;
+        4)
+            docker_mirror_config
+            ;;
         0) return ;;
         *) log_error "无效选择" ;;
     esac
+}
+
+# ------------------------------------------------------------
+# [Docker] 配置镜像加速器（国内加速源，写 daemon.json + 重启）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+docker_mirror_config() {
+    check_root || return 1
+    check_command docker || { log_error "Docker 未安装"; return 1; }
+    echo ""
+    echo "  ${COLOR_BOLD}当前镜像加速配置:${COLOR_RESET}"
+    if [[ -f /etc/docker/daemon.json ]]; then
+        grep -A5 '"registry-mirrors"' /etc/docker/daemon.json 2>/dev/null | sed 's/^/    /' || echo "    ${COLOR_GRAY}(未配置加速)${COLOR_RESET}"
+    else
+        echo "    ${COLOR_GRAY}(未配置加速)${COLOR_RESET}"
+    fi
+    echo ""
+    echo "  ${COLOR_BOLD}常用国内加速源:${COLOR_RESET}"
+    echo "    https://docker.m.daocloud.io"
+    echo "    https://docker.1panel.live"
+    echo "    https://dockerproxy.net"
+    echo ""
+    read_input accel "加速地址(多个用英文逗号分隔，留空取消):" "https://docker.m.daocloud.io,https://docker.1panel.live"
+
+    # 拆分为 JSON 数组
+    local json=""
+    local old_ifs="${IFS}"
+    IFS=',' read -r -a mirrors <<< "${accel}"
+    local i m
+    for ((i = 0; i < ${#mirrors[@]}; i++)); do
+        m=$(echo "${mirrors[$i]}" | xargs)
+        [[ -z "${m}" ]] && continue
+        if [[ -n "${json}" ]]; then
+            json+=","
+        fi
+        json+="\"${m}\""
+    done
+    IFS="${old_ifs}"
+    [[ -z "${json}" ]] && return
+
+    if confirm_action "写入 /etc/docker/daemon.json 并重启 Docker？"; then
+        # 备份现有配置
+        if [[ -f /etc/docker/daemon.json ]]; then
+            cp /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d_%H%M%S)"
+        fi
+        # 若已有 registry-mirrors 则替换，否则插入（简单场景：多数 daemon.json 仅此一项，原配置已备份）
+        echo "{ \"registry-mirrors\": [${json}] }" | sudo tee /etc/docker/daemon.json >/dev/null
+        echo "  ${COLOR_BLUE}重启 Docker 守护进程...${COLOR_RESET}"
+        sudo systemctl restart docker 2>/dev/null || sudo service docker restart 2>/dev/null || true
+        log_success "镜像加速器已配置"
+        log_info "验证: docker info | grep -A3 registry.mirrors"
+        audit_log "配置 Docker 镜像加速器" "成功"
+    fi
 }
 
 # ------------------------------------------------------------
@@ -199,7 +256,7 @@ docker_containers() {
     local act
     log_info "运行中容器列表:"
     docker ps
-    read_input act "操作 [1=运行新容器 2=停止 3=启动 4=删除 5=日志 0=仅查看返回]:" "0"
+    read_input act "操作 [1=运行新容器 2=停止 3=启动 4=删除 5=日志 6=进入容器 7=查看IP/端口 8=清理 0=仅查看返回]:" "0"
     local cid
     case "${act}" in
         1)
@@ -214,9 +271,46 @@ docker_containers() {
         3) read_input cid "容器 ID/名称:" ""; docker start "${cid}" ;;
         4) read_input cid "容器 ID/名称:" ""; confirm_action "删除容器 ${cid}" || return 1; docker rm -f "${cid}" ;;
         5) read_input cid "容器 ID/名称:" ""; docker logs -f --tail 100 "${cid}" ;;
+        6)
+            read_input cid "容器 ID/名称:" ""
+            echo "  ${COLOR_GRAY}进入容器 shell（退出输入 exit）${COLOR_RESET}"
+            docker exec -it "${cid}" /bin/bash 2>/dev/null || docker exec -it "${cid}" /bin/sh
+            ;;
+        7)
+            read_input cid "容器 ID/名称:" ""
+            log_info "容器 ${cid} 网络信息:"
+            docker inspect --format '  容器名: {{.Name}}
+  IP 地址: {{range .NetworkSettings.Networks}}{{.IPAddress}} ({{.NetworkID | printf "%.12s"}}){{end}}
+  端口映射: {{range $p, $c := .NetworkSettings.Ports}}{{$p}} -> {{$c}}{{end}}' "${cid}" 2>/dev/null \
+                || log_error "容器信息获取失败（请确认容器 ID/名称正确）"
+            ;;
+        8)
+            docker_system_prune
+            ;;
         0) return ;;
         *) log_error "无效选择" ;;
     esac
+}
+
+# ------------------------------------------------------------
+# [Docker] 一键清理（未使用镜像/容器/缓存，危险需确认）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+docker_system_prune() {
+    check_root || return 1
+    echo ""
+    echo "  ${COLOR_BOLD}清理前 Docker 空间占用:${COLOR_RESET}"
+    docker system df 2>/dev/null | sed 's/^/    /'
+    echo ""
+    echo "  ${COLOR_YELLOW}将清理: 所有未使用镜像、已停止容器、无用数据卷、构建缓存${COLOR_RESET}"
+    if confirm_action "确认执行 docker system prune -af？（不可恢复，将删除未使用的全部资源）"; then
+        docker system prune -af 2>&1 | tail -5 | sed 's/^/    /'
+        echo "  ${COLOR_GREEN}✅ 清理完成${COLOR_RESET}"
+        echo "  ${COLOR_BLUE}清理后空间占用:${COLOR_RESET}"
+        docker system df 2>/dev/null | sed 's/^/    /'
+        audit_log "Docker 一键清理(prune -af)" "成功"
+    fi
 }
 # ------------------------------------------------------------
 # [Docker] 网络管理
