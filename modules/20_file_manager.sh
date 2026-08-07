@@ -188,7 +188,11 @@ fm_read_sgr() {
         fi
         buf+="${c}"
     done
-    local b="${buf%%;*}" rest="${buf#*;}" x="${rest%%;*}" y="${rest#*;}"
+    local b="" rest="" x="" y=""
+    b="${buf%%;*}"
+    rest="${buf#*;}"
+    x="${rest%%;*}"
+    y="${rest#*;}"
     FM_EVB=${b:-0}; FM_EVX=${x:-0}; FM_EVY=${y:-0}
     FM_EVPRESS=1
     [[ "${term}" == "m" ]] && FM_EVPRESS=0
