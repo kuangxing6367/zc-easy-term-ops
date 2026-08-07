@@ -1435,6 +1435,24 @@ ai_llm_status() {
 # ------------------------------------------------------------
 # OpenAI 交互式配置（子菜单选项 3）：填 Key/地址/模型/超时/测试/停用
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# 行编辑输入（readline：支持方向键/退格/光标移动）
+# 非终端环境自动回退普通 read，避免 read -e 报错
+# 参数：$1 提示文本；输出：用户输入内容
+# ------------------------------------------------------------
+ai_llm_readline() {
+    local prompt="$1" v=""
+    if [[ -t 0 ]]; then
+        read -r -e -p "${prompt}" v || v=""
+    else
+        read -r -p "${prompt}" v || v=""
+    fi
+    printf '%s' "${v}"
+}
+
+# ------------------------------------------------------------
+# OpenAI 交互式配置
+# ------------------------------------------------------------
 ai_llm_config() {
     local ans="" v=""
     while true; do
@@ -1455,25 +1473,21 @@ ai_llm_config() {
         ans=$(echo "${ans}" | tr -d '[:space:]')
         case "${ans}" in
             1)
-                v=""
-                read -r -p "  请输入 API Key（留空不改）: " v
+                v=$(ai_llm_readline "  请输入 API Key（留空不改）: ")
                 [[ -n "${v}" ]] && ai_llm_write_conf OPENAI_API_KEY "${v}"
                 ;;
             2)
-                v=""
-                read -r -p "  接口地址 [${OPENAI_BASE_URL:-https://api.openai.com/v1}]: " v
+                v=$(ai_llm_readline "  接口地址 [${OPENAI_BASE_URL:-https://api.openai.com/v1}]: ")
                 v="${v:-${OPENAI_BASE_URL:-https://api.openai.com/v1}}"
                 ai_llm_write_conf OPENAI_BASE_URL "${v}"
                 ;;
             3)
-                v=""
-                read -r -p "  模型名 [${OPENAI_MODEL:-gpt-4o-mini}]: " v
+                v=$(ai_llm_readline "  模型名 [${OPENAI_MODEL:-gpt-4o-mini}]: ")
                 v="${v:-${OPENAI_MODEL:-gpt-4o-mini}}"
                 ai_llm_write_conf OPENAI_MODEL "${v}"
                 ;;
             4)
-                v=""
-                read -r -p "  请求超时秒数 [${OPENAI_TIMEOUT:-120}]: " v
+                v=$(ai_llm_readline "  请求超时秒数 [${OPENAI_TIMEOUT:-120}]: ")
                 v="${v:-${OPENAI_TIMEOUT:-120}}"
                 if [[ "${v}" =~ ^[0-9]+$ ]]; then
                     ai_llm_write_conf OPENAI_TIMEOUT "${v}"
