@@ -2,6 +2,17 @@
 
 本文件记录 zc-easy-term-ops（ZETOPS）的版本更新历史。
 
+## [1.3.4] - 2026-08-07
+
+### 增强（自我更新模块 12）
+
+- **更新检查升级为"版本号+提交 SHA"双维度**：调用 GitHub API 获取分支最新提交 SHA，本地记录上次更新到的 SHA（`~/.zetops/.last_commit`）。版本号未变但代码有更新（纯 bugfix 不涨版本号）时也能识别并提示更新
+- **修复文件管理器 `rest: unbound variable`（模块 20）**：SGR 鼠标解析中 `local` 同处声明并在本行引用 `rest`，`set -u` 下展开顺序导致崩溃；拆行赋值
+- **AI 配置输入支持 readline 行编辑（模块 13）**：方向键/退格可编辑，非终端自动回退
+- **新增一键在线安装 `install-online.sh`**：支持 GitHub 加速镜像下载并自动调用 install.sh
+- **AI 助手对话崩溃修复（COLOR_CYAN 未定义）**
+- **自更新远程版本解析兼容 `${VAR:-默认}` 写法**；config.sh 的 `ZETOPS_VERSION` 改为纯字面量
+
 ## [1.3.3] - 2026-08-07
 
 ### 修复

@@ -98,15 +98,57 @@ self_fetch_remote_version() {
 }
 
 # ------------------------------------------------------------
+# 获取远程分支最新提交 SHA（GitHub API）
+# 用于识别"版本号未变但代码有更新"的提交（bugfix 不涨版本号）
+# 参数：$1 owner  $2 repo  $3 branch
+# 输出：40 位 SHA（失败时为空，此时仅按版本号判断）
+# ------------------------------------------------------------
+self_fetch_remote_sha() {
+    local owner="$1" repo="$2" branch="$3"
+    local api_url="${ZETOPS_GITHUB_MIRROR}https://api.github.com/repos/${owner}/${repo}/commits/${branch}"
+    curl -fsSL --max-time 20 "${api_url}" 2>/dev/null \
+        | grep -oE '"sha": "[0-9a-f]{40}"' \
+        | head -n1 | grep -oE '[0-9a-f]{40}' || true
+}
+
+# ------------------------------------------------------------
+# 读取本地记录的上次更新提交 SHA
+# 参数：无
+# 输出：SHA（无记录时为空）
+# ------------------------------------------------------------
+self_stored_sha() {
+    local f="${CONFIG_DIR}/.last_commit"
+    [[ -f "${f}" ]] && cat "${f}" || true
+}
+
+# ------------------------------------------------------------
+# 记录本地更新到的提交 SHA
+# 参数：$1 SHA
+# 返回：无
+# ------------------------------------------------------------
+self_save_sha() {
+    local sha="$1"
+    [[ -z "${sha}" ]] && return 0
+    mkdir -p "${CONFIG_DIR}"
+    printf '%s\n' "${sha}" > "${CONFIG_DIR}/.last_commit"
+}
+
+# ------------------------------------------------------------
 # [查看] 查看当前版本与安装信息
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
 self_status_view() {
-    local root
+    local root sha
     root=$(self_root)
+    sha=$(self_stored_sha)
     log_info "================ 当前版本与安装信息 ================"
     echo "  版本号: ${ZETOPS_VERSION}"
+    if [[ -n "${sha}" ]]; then
+        echo "  本地提交: ${sha:0:12}"
+    else
+        echo "  本地提交: (未知)"
+    fi
     echo "  安装目录: ${root}"
     echo "  更新分支: ${ZETOPS_UPDATE_BRANCH}"
     echo "  GitHub 仓库: ${ZETOPS_REPO_URL}"
@@ -128,27 +170,59 @@ self_status_view() {
 }
 
 # ------------------------------------------------------------
-# [检查] 检查远程更新（对比版本号）
+# [检查] 检查远程更新（版本号 + 提交 SHA 双维度）
 # 参数：无
 # 返回：0=最新 1=检查失败
 # ------------------------------------------------------------
 self_check_update() {
-    local owner repo branch remote_ver
+    local owner repo branch remote_ver remote_sha local_sha
     read -r owner repo <<<"$(self_repo_parts)"
     branch="${ZETOPS_UPDATE_BRANCH}"
+    local_sha=$(self_stored_sha)
     log_info "正在检查远程更新（${owner}/${repo} @ ${branch}）..."
     remote_ver=$(self_fetch_remote_version "${owner}" "${repo}" "${branch}")
     if [[ -z "${remote_ver}" ]]; then
         log_error "获取远程版本失败。可能原因：网络不可达 / GitHub 被墙，建议配置加速镜像（菜单 5）"
         return 1
     fi
+    remote_sha=$(self_fetch_remote_sha "${owner}" "${repo}" "${branch}")
     echo "  本地版本: ${ZETOPS_VERSION}"
     echo "  远程版本: ${remote_ver}"
-    if [[ "${ZETOPS_VERSION}" == "${remote_ver}" ]]; then
-        log_success "已是最新版本"
+    if [[ -n "${local_sha}" ]]; then
+        echo "  本地提交: ${local_sha:0:12}"
     else
-        log_warning "检测到新版本 ${remote_ver}，可进入菜单 3 执行更新"
+        echo "  本地提交: (未知)"
     fi
+    if [[ -n "${remote_sha}" ]]; then
+        echo "  远程提交: ${remote_sha:0:12}"
+    else
+        echo "  远程提交: (获取失败，仅按版本号判断)"
+    fi
+    if self_is_latest "${remote_ver}" "${remote_sha}"; then
+        log_success "已是最新版本"
+    elif [[ "${ZETOPS_VERSION}" != "${remote_ver}" ]]; then
+        log_warning "检测到新版本 ${remote_ver}，可进入菜单 3 执行更新"
+    else
+        log_warning "版本相同但代码有更新（提交 SHA 变化），可进入菜单 3 执行更新"
+    fi
+}
+
+# ------------------------------------------------------------
+# 判断本地是否已是最新（版本号 + 提交 SHA 双维度）
+# 参数：$1 远程版本  $2 远程 SHA
+# 返回：0=已最新 1=有更新
+# ------------------------------------------------------------
+self_is_latest() {
+    local remote_ver="$1" remote_sha="$2" local_sha
+    local_sha=$(self_stored_sha)
+    if [[ "${ZETOPS_VERSION}" != "${remote_ver}" ]]; then
+        return 1
+    fi
+    # 版本相同：若本地有 SHA 记录且远程 SHA 可获取，则 SHA 不同视为有更新
+    if [[ -n "${local_sha}" && -n "${remote_sha}" && "${local_sha}" != "${remote_sha}" ]]; then
+        return 1
+    fi
+    return 0
 }
 
 # ------------------------------------------------------------
@@ -158,28 +232,39 @@ self_check_update() {
 # ------------------------------------------------------------
 self_do_update() {
     check_root || return 1
-    local root owner repo branch remote_ver local_ver
+    local root owner repo branch remote_ver remote_sha local_ver local_sha
     root=$(self_root)
     read -r owner repo <<<"$(self_repo_parts)"
     branch="${ZETOPS_UPDATE_BRANCH}"
     local_ver="${ZETOPS_VERSION}"
+    local_sha=$(self_stored_sha)
     remote_ver=$(self_fetch_remote_version "${owner}" "${repo}" "${branch}")
     if [[ -z "${remote_ver}" ]]; then
         log_error "获取远程版本失败，请检查网络或配置加速镜像（菜单 5）"
         return 1
     fi
-    if [[ "${local_ver}" == "${remote_ver}" ]]; then
+    remote_sha=$(self_fetch_remote_sha "${owner}" "${repo}" "${branch}")
+    if self_is_latest "${remote_ver}" "${remote_sha}"; then
         log_success "已是最新版本: ${local_ver}，无需更新"
         return 0
     fi
-    log_info "本地 ${local_ver} -> 远程 ${remote_ver}"
-    confirm_action "从 GitHub(${branch} 分支) 更新到 ${remote_ver}" || return 1
+    if [[ "${local_ver}" != "${remote_ver}" ]]; then
+        log_info "本地 ${local_ver} -> 远程 ${remote_ver}"
+        confirm_action "从 GitHub(${branch} 分支) 更新到 ${remote_ver}" || return 1
+    else
+        log_info "本地 ${local_ver} 与远程版本相同，但本地提交 ${local_sha:0:12} 与远程 ${remote_sha:0:12} 不同（版本号不变的代码更新）"
+        confirm_action "从 GitHub(${branch} 分支) 拉取最新代码" || return 1
+    fi
 
     if [[ -d "${root}/.git" ]]; then
         self_do_update_git "${root}" "${branch}" || return 1
+        remote_sha=$(git -C "${root}" rev-parse HEAD 2>/dev/null || echo "${remote_sha}")
     else
         self_do_update_tarball "${root}" "${owner}" "${repo}" "${branch}" || return 1
     fi
+
+    # 记录本次更新到的提交 SHA（支持版本号不变的 bugfix 更新识别）
+    self_save_sha "${remote_sha}"
 
     # 同步用户配置中的版本号（config.sh 覆盖后其默认值被用户配置覆盖时不生效，此处修正）
     if [[ -f "${CONFIG_FILE}" ]] && grep -q '^ZETOPS_VERSION=' "${CONFIG_FILE}"; then

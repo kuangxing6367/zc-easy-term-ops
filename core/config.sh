@@ -26,7 +26,7 @@ DOCKER_REGISTRY="${DOCKER_REGISTRY:-docker.io}"
 
 # ---- 工具箱版本与更新源配置（自我更新模块使用） ----
 # 工具箱整体版本号（升级时由自我更新模块自动更新）
-ZETOPS_VERSION="1.3.3"
+ZETOPS_VERSION="1.3.4"
 # GitHub 仓库地址（自我更新拉取来源）
 ZETOPS_REPO_URL="${ZETOPS_REPO_URL:-https://github.com/kuangxing6367/zc-easy-term-ops.git}"
 # 更新分支
