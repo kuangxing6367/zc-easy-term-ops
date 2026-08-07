@@ -31,7 +31,7 @@ An interactive, modular Linux operations toolbox (ZETOPS). Provides multi-level 
 | 17 站点与SSL管理 | 站点清单 sites.ini、增删改查、证书到期倒计时批量检测（<15天红色告警）、certbot/手动续期、HTTP健康检查、Nginx站点配置生成、404错误页设置 |
 | 18 统一数据库管理 | MySQL/PostgreSQL/Redis/MongoDB 实例清单 databases.ini、多回退连接测试、统一备份恢复、慢查询、性能诊断 |
 | 19 容灾回退链 | 回退链配置（primary→fallback_N）、链式降级执行（自动重试）、--dry-run 演练、Watchdog 自动切换、回退历史 |
-| 20 文件管理器 | 类Windows资源管理器：目录导航/分页列表(大小/权限/时间)、目录树查看(t)、查看/编辑/复制/移动/重命名/删除(危险保护)、chmod、tar/zip压缩解压、搜索、书签 |
+| 20 文件管理器 | 纯Bash自绘TUI：鼠标点击/双击打开/滚轮、顶部工具栏一键操作、复制/剪切/粘贴剪贴板（Space多选）、目录导航/分页列表/目录树/查看/编辑/重命名/删除(危险保护)/chmod/tar zip压缩解压/搜索/书签 |
 | 21 FTP服务管理 | vsftpd 安装/启停/状态总览、FTP用户增删/锁解锁、匿名开关、端口/限速/chroot/被动端口配置、语法校验+连接测试 |
 | 22 配置文件中心 | Nginx/Apache/MySQL/Redis/SSH/系统常用配置自动探测、查看/编辑(自动备份)、备份恢复(一键回滚)、语法校验 |
 | 23 运维任务编排 | 多步骤任务定义(.ztask)/交互创建/进度执行(3种失败策略)/执行历史，发布=git pull→构建→重启→健康检查 |

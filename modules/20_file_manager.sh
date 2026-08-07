@@ -1,39 +1,55 @@
 #!/bin/bash
 # ============================================================
 # 文件：modules/20_file_manager.sh
-# 功能：可视化文件管理器 [File Manager - Explorer Style]
+# 功能：TUI 可视化文件管理器 [File Manager - TUI]
 # 作者：zc 团队
-# 版本：1.0.0
-# 日期：2026-08-06
+# 版本：2.0.0
+# 日期：2026-08-07
 # 说明：
-#   - 类 Windows 资源管理器：当前路径显示、目录进入/返回、
-#     分页列表（目录/文件/大小/权限/时间/图标）、刷新
-#   - 文件操作：查看/编辑/复制/移动/重命名/删除(危险保护)/
-#     权限修改/压缩解压/新建文件目录/搜索
-#   - 书签管理：~/.zetops/fm_bookmarks 快速跳转
+#   - 纯 Bash 自绘 TUI（ANSI 转义，零外部依赖，无需 dialog/ranger）
+#   - 备用屏幕缓冲 + 鼠标点击（SGR 模式，x10 兼容回退）+ 双击打开
+#   - 顶部工具栏（返回/上级/刷新/新建/搜索/书签/目录树/复制/剪切/
+#     粘贴/改名/删除/退出），点击即触发
+#   - 文件剪贴板（~/.zetops/fm_clipboard）：复制/剪切/粘贴，多选标记(Space)
+#   - 键盘：↑↓ 选择 Enter/双击打开 ←/Esc 返回 Space 多选 r 刷新
+#     q 退出，快捷键全集同工具栏
+#   - 文件操作：查看/编辑/复制/移动/重命名/删除(危险保护)/权限/压缩解压
 #   - 安全：删除必须确认、危险目录(/、/etc 等)二次警告
 # ============================================================
 set -euo pipefail
 
 module_name="文件管理器"
 module_short="file_manager"
-module_version="1.0.0"
+module_version="2.0.0"
 
 FM_BOOKMARKS="${FM_BOOKMARKS:-${HOME}/.zetops/fm_bookmarks}"
+FM_CLIPBOARD="${FM_CLIPBOARD:-${HOME}/.zetops/fm_clipboard}"
 FM_PWD="${FM_PWD:-$HOME}"    # 当前目录
-FM_PAGE=1                    # 当前页码
-FM_PAGE_SIZE=18              # 每页条目数
-FM_ITEMS=()                  # 当前页条目数组
+
+# ---- TUI 状态 ----
+FM_LIST=()          # 当前目录条目（TYPE|name|full）
+FM_LEN=0            # 条目总数
+FM_CURSOR=0         # 光标条目索引
+FM_OFFSET=0         # 可视窗口顶部索引
+FM_WINH=10          # 可视窗口行数
+FM_MARKED=()        # 多选标记的完整路径
+FM_CLIP_MODE=""     # 剪贴板模式 copy/cut
+FM_CLIP_LIST=()     # 剪贴板路径列表
+FM_TOOLBAR_BOXES=() # 工具栏点击区域（start|width|id）
+FM_STATUS_MSG=""    # 一次性状态消息
+FM_QUIT=0           # 退出标志（工具栏点击）
+FM_DBL_ROW=-1       # 双击检测：上次点击行
+FM_DBL_TIME=0       # 双击检测：上次点击时间
 
 module_description() {
-    echo "类 Windows 资源管理器：目录导航、文件操作、权限、压缩解压、书签 [File Manager]"
+    echo "TUI 文件管理器：鼠标点击、工具栏、复制/剪切/粘贴剪贴板、目录导航 [File Manager TUI]"
 }
 
 module_menu() {
     echo "======================================"
     echo "  ${module_name}"
     echo "======================================"
-    echo " 1. 打开文件管理器"
+    echo " 1. 打开文件管理器（TUI 全屏界面）"
     echo " 0. 返回主菜单"
     echo "======================================"
 }
@@ -48,106 +64,611 @@ module_execute() {
     press_enter
 }
 
+# ============================================================
+# TUI 基础层（备用屏幕 / 鼠标 / 事件读取 / 渲染）
+# ============================================================
+
 # ------------------------------------------------------------
-# 主循环
+# 进入 TUI：备用屏幕 + 鼠标(SGR, x10 兼容) + 隐藏光标
 # ------------------------------------------------------------
-fm_main() {
-    # 校验初始目录
-    [[ -d "${FM_PWD}" ]] || FM_PWD="${HOME}"
-    local input=""
-    while true; do
-        fm_render
-        echo -n "  ${COLOR_BOLD}${COLOR_GREEN}FM>${COLOR_RESET} "
-        read -r input || { echo ""; break; }
-        input=$(echo "${input}" | tr '[:upper:]' '[:lower:]')
-        case "${input}" in
-            q|quit|exit) break ;;
-            r|refresh)   continue ;;
-            ..)          fm_go_parent ;;
-            b|bookmark)  fm_bookmark_menu ;;
-            s|search)    fm_search ;;
-            t|tree)      fm_tree_menu ;;
-            a|action)    fm_action_menu ;;
-            *)           fm_select "${input}" ;;
-        esac
-    done
+fm_tui_enter() {
+    printf '\e[?1049h\e[?1000;1006h\e[?25l'
 }
 
 # ------------------------------------------------------------
-# 渲染文件列表（分页）
+# 退出 TUI：恢复光标 / 关闭鼠标 / 还原主屏幕
 # ------------------------------------------------------------
-fm_render() {
-    clear 2>/dev/null || true
-    echo "${COLOR_BOLD}${COLOR_BLUE}"
-    echo "======================================="
-    echo "  文件管理器 | $(fm_icon_path "${FM_PWD}")"
-    echo "======================================="
-    echo "${COLOR_RESET}"
+fm_tui_leave() {
+    printf '\e[?25h\e[?1000;1006l\e[?1049l'
+}
 
-    # 收集条目（含隐藏文件，目录优先）
-    local entries=()
-    local f
-    # shellcheck disable=SC2086
+# ------------------------------------------------------------
+# 在临时离开 TUI 的上下文里执行操作函数（复用原行式交互）
+# 参数：$@ 函数及参数
+# ------------------------------------------------------------
+fm_tui_do() {
+    fm_tui_leave
+    "$@" || true
+    fm_tui_enter
+}
+
+# ------------------------------------------------------------
+# 字符串显示宽度（非 ASCII 按 2 列估算，含中文/Emoji）
+# 参数：$1 字符串
+# 输出：列数
+# ------------------------------------------------------------
+fm_str_w() {
+    local s="$1" i c n=0
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        if [[ "${c}" =~ [^\x00-\x7F] ]]; then
+            n=$((n + 2))
+        else
+            n=$((n + 1))
+        fi
+    done
+    printf '%d' "${n}"
+}
+
+# ------------------------------------------------------------
+# 读取一个输入事件（键盘或鼠标），结果写入 FM_EV/FM_EVK/FM_EVB/FM_EVX/FM_EVY
+# ------------------------------------------------------------
+FM_EV="key"; FM_EVK=""; FM_EVB=""; FM_EVX=0; FM_EVY=0; FM_EVPRESS=1
+fm_read_event() {
+    FM_EV="key"; FM_EVK=""; FM_EVB=""; FM_EVX=0; FM_EVY=0; FM_EVPRESS=1
+    local ch="" ch2="" ch3=""
+    IFS= read -rsn1 ch || { FM_EVK="QUIT"; return; }
+    [[ -z "${ch}" ]] && { FM_EVK="NONE"; return; }
+    case "${ch}" in
+        $'\x1b')
+            IFS= read -rsn1 ch2 || { FM_EVK="ESC"; return; }
+            if [[ "${ch2}" == "[" ]]; then
+                IFS= read -rsn1 ch3 || { FM_EVK="ESC"; return; }
+                case "${ch3}" in
+                    A) FM_EVK="UP" ;;
+                    B) FM_EVK="DOWN" ;;
+                    C) FM_EVK="RIGHT" ;;
+                    D) FM_EVK="LEFT" ;;
+                    H) FM_EVK="HOME" ;;
+                    F) FM_EVK="END" ;;
+                    5) IFS= read -rsn1 _; FM_EVK="PAGEUP" ;;
+                    6) IFS= read -rsn1 _; FM_EVK="PAGEDOWN" ;;
+                    M) fm_read_x10 ;;
+                    '<') fm_read_sgr ;;
+                    *) FM_EVK="ESC" ;;
+                esac
+            elif [[ "${ch2}" == "O" ]]; then
+                IFS= read -rsn1 ch3 || { FM_EVK="ESC"; return; }
+                case "${ch3}" in
+                    A) FM_EVK="UP" ;;
+                    B) FM_EVK="DOWN" ;;
+                    C) FM_EVK="RIGHT" ;;
+                    D) FM_EVK="LEFT" ;;
+                    *) FM_EVK="ESC" ;;
+                esac
+            else
+                FM_EVK="ESC"
+            fi
+            ;;
+        $'\r'|$'\n') FM_EVK="ENTER" ;;
+        $'\x7f'|$'\x08') FM_EVK="BACK" ;;
+        $' ') FM_EVK="SPACE" ;;
+        *) FM_EVK="${ch}" ;;
+    esac
+}
+
+# ------------------------------------------------------------
+# x10 鼠标协议解析（\e[M Cb Cx Cy，兼容旧终端）
+# ------------------------------------------------------------
+fm_read_x10() {
+    FM_EV="mouse"
+    local b="" x="" y=""
+    IFS= read -rsn1 b; IFS= read -rsn1 x; IFS= read -rsn1 y
+    FM_EVB=$(( $(printf '%d' "'${b}") - 32 ))
+    FM_EVX=$(( $(printf '%d' "'${x}") - 32 ))
+    FM_EVY=$(( $(printf '%d' "'${y}") - 32 ))
+    # x10 按下=按钮位，释放=按钮位高 2 位(bit0,1)置位
+    FM_EVPRESS=1
+    if (( (FM_EVB & 3) == 3 )); then
+        FM_EVPRESS=0
+    fi
+}
+
+# ------------------------------------------------------------
+# SGR 鼠标协议解析（\e[<b;x;yM 按下 / m 释放，主流终端）
+# ------------------------------------------------------------
+fm_read_sgr() {
+    FM_EV="mouse"
+    local buf="" c="" term="M"
+    while :; do
+        IFS= read -rsn1 c || break
+        if [[ "${c}" == "M" || "${c}" == "m" ]]; then
+            term="${c}"
+            break
+        fi
+        buf+="${c}"
+    done
+    local b="${buf%%;*}" rest="${buf#*;}" x="${rest%%;*}" y="${rest#*;}"
+    FM_EVB=${b:-0}; FM_EVX=${x:-0}; FM_EVY=${y:-0}
+    FM_EVPRESS=1
+    [[ "${term}" == "m" ]] && FM_EVPRESS=0
+}
+
+# ------------------------------------------------------------
+# 刷新当前目录条目列表（目录在前，文件在后，各自按名称排序）
+# ------------------------------------------------------------
+fm_refresh_list() {
+    local d f d_entries=() f_entries=() sd=()
+    for d in "${FM_PWD}"/.[!.]* "${FM_PWD}"/..?*; do
+        [[ -d "${d}" ]] && d_entries+=("D|$(basename "${d}")|${d}")
+    done 2>/dev/null || true
     for f in "${FM_PWD}"/.[!.]* "${FM_PWD}"/..?*; do
-        [[ -e "${f}" ]] && entries+=("${f}")
+        [[ -f "${f}" ]] && f_entries+=("F|$(basename "${f}")|${f}")
+    done 2>/dev/null || true
+    for d in "${FM_PWD}"/*; do
+        [[ -d "${d}" ]] && d_entries+=("D|$(basename "${d}")|${d}")
     done 2>/dev/null || true
     for f in "${FM_PWD}"/*; do
-        [[ -e "${f}" ]] && entries+=("${f}")
+        [[ -f "${f}" ]] && f_entries+=("F|$(basename "${f}")|${f}")
     done 2>/dev/null || true
 
-    # 排序：目录在前，文件在后，按名称
-    entries=($(for e in "${entries[@]}"; do
-        [[ -d "${e}" ]] && echo "D|$(basename "${e}")|${e}"
-    done | sort -t'|' -k2; for e in "${entries[@]}"; do
-        [[ -f "${e}" ]] && echo "F|$(basename "${e}")|${e}"
-    done | sort -t'|' -k2))
-
-    local total=${#entries[@]}
-    local total_pages=$(( (total + FM_PAGE_SIZE - 1) / FM_PAGE_SIZE ))
-    (( total_pages < 1 )) && total_pages=1
-    (( FM_PAGE > total_pages )) && FM_PAGE=${total_pages}
-
-    local start=$(( (FM_PAGE - 1) * FM_PAGE_SIZE ))
-    local end=$(( start + FM_PAGE_SIZE ))
-    (( end > total )) && end=${total}
-
-    # 上级目录
-    if [[ "${FM_PWD}" != "/" ]]; then
-        echo "  ${COLOR_BOLD}[1]${COLOR_RESET}  ${COLOR_YELLOW}📁  ..${COLOR_RESET} (上级目录)"
+    FM_LIST=()
+    if (( ${#d_entries[@]} > 0 )); then
+        mapfile -t FM_LIST < <(printf '%s\n' "${d_entries[@]}" | LC_ALL=C sort -t'|' -k2 2>/dev/null || true)
     fi
+    if (( ${#f_entries[@]} > 0 )); then
+        mapfile -t sd < <(printf '%s\n' "${f_entries[@]}" | LC_ALL=C sort -t'|' -k2 2>/dev/null || true)
+        FM_LIST+=("${sd[@]}")
+    fi
+    FM_LEN=${#FM_LIST[@]}
 
-    FM_ITEMS=()
-    local idx=0 i=0
-    for ((i = start; i < end; i++)); do
-        local line="${entries[$i]}"
-        local type="${line%%|*}"
-        local rest="${line#*|}"
-        local name="${rest%%|*}"
-        local full="${rest#*|}"
-        idx=$((idx + 1))
-        FM_ITEMS+=("${type}|${name}|${full}")
-        if [[ "${type}" == "D" ]]; then
-            echo "  ${COLOR_BOLD}[$((idx + 1))]${COLOR_RESET}  ${COLOR_BLUE}📁  ${name}/${COLOR_RESET}"
-        else
-            local size perm mtime
+    # 光标/窗口越界修正
+    if (( FM_LEN > 0 )); then
+        (( FM_CURSOR >= FM_LEN )) && FM_CURSOR=$((FM_LEN - 1))
+    else
+        FM_CURSOR=0
+    fi
+    (( FM_OFFSET > FM_CURSOR )) && FM_OFFSET=${FM_CURSOR}
+    if (( FM_CURSOR - FM_OFFSET >= FM_WINH )); then
+        FM_OFFSET=$(( FM_CURSOR - FM_WINH + 1 ))
+    fi
+    (( FM_OFFSET < 0 )) && FM_OFFSET=0
+    return 0
+}
+
+# ------------------------------------------------------------
+# 全屏渲染（顶部标题 + 工具栏 + 列表 + 底部状态/帮助）
+# ------------------------------------------------------------
+fm_render() {
+    local rows cols
+    rows=$(stty size 2>/dev/null | awk '{print $1}' || echo 24)
+    cols=$(stty size 2>/dev/null | awk '{print $2}' || echo 80)
+    rows=${rows:-24}; cols=${cols:-80}
+    (( rows < 12 )) && rows=12
+    (( cols < 40 )) && cols=40
+    FM_WINH=$(( rows - 6 ))
+    (( FM_WINH < 4 )) && FM_WINH=4
+
+    local i r
+
+    # 标题行
+    printf '\e[H\e[30;47m ZETOPS 文件管理器 v%s │ %s \e[0m\e[K\n' "${module_version}" "$(fm_icon_path "${FM_PWD}")"
+
+    # 工具栏（记录点击区域）
+    FM_TOOLBAR_BOXES=()
+    local tb_id=(back up ref new srch bm tree copy cut paste ren del quit)
+    local tb_lb=("返回" "上级" "刷新" "新建" "搜索" "书签" "目录树" "复制" "剪切" "粘贴" "改名" "删除" "退出")
+    local col=1 w
+    printf '\e[44;37m'
+    for ((i = 0; i < ${#tb_id[@]}; i++)); do
+        w=$(fm_str_w "[${tb_lb[$i]}]")
+        FM_TOOLBAR_BOXES+=("${col}|${w}|${tb_id[$i]}")
+        printf '[%s] ' "${tb_lb[$i]}"
+        col=$(( col + w + 1 ))
+    done
+    printf '\e[0m\e[K\n'
+
+    # 表头
+    printf '\e[33m 名称                                            大小 │ 权限\e[0m\e[K\n'
+
+    # 文件列表窗口
+    local idx item type rest name full prefix p size perm mtime name_disp
+    for ((r = 0; r < FM_WINH; r++)); do
+        idx=$(( FM_OFFSET + r ))
+        printf '\e[%d;1H\e[K' $(( 5 + r ))
+        (( idx >= FM_LEN )) && continue
+        item="${FM_LIST[$idx]}"
+        type="${item%%|*}"; rest="${item#*|}"; name="${rest%%|*}"; full="${rest#*|}"
+        prefix="  "
+        [[ "${idx}" == "${FM_CURSOR}" ]] && prefix="▶ "
+        for p in "${FM_MARKED[@]}"; do
+            if [[ "${p}" == "${full}" ]]; then
+                [[ "${prefix}" == "▶ " ]] && prefix="▶✓" || prefix="✓ "
+                break
+            fi
+        done
+        size=""; perm=""
+        if [[ "${type}" == "F" ]]; then
             size=$(fm_human_size "$(stat -c%s "${full}" 2>/dev/null || echo 0)")
             perm=$(stat -c '%A' "${full}" 2>/dev/null || echo "?")
-            mtime=$(stat -c '%y' "${full}" 2>/dev/null | cut -d. -f1 || echo "?")
-            echo "  ${COLOR_BOLD}[$((idx + 1))]${COLOR_RESET}  ${COLOR_GREEN}📄  ${name}${COLOR_RESET}  ${COLOR_GRAY}${size} | ${perm} | ${mtime}${COLOR_RESET}"
+        fi
+        name_disp="${name}"
+        [[ "${type}" == "D" ]] && name_disp="${name}/"
+        local budget=$(( cols - 28 ))
+        (( budget < 10 )) && budget=10
+        if (( $(fm_str_w "${name_disp}") > budget )); then
+            local mc=$(( budget / 2 - 1 ))
+            (( mc < 1 )) && mc=1
+            name_disp="$(printf '%s' "${name_disp}" | cut -c1-${mc})…"
+        fi
+        if [[ "${type}" == "D" ]]; then
+            printf '\e[36m%s %s\e[0m\e[K\n' "${prefix}" "${name_disp}"
+        else
+            local meta=""
+            [[ -n "${size}" || -n "${perm}" ]] && meta="${size} ${perm}"
+            local pad=$(( cols - 2 - $(fm_str_w "${name_disp}") - $(fm_str_w "${meta}") - 2 ))
+            (( pad < 1 )) && pad=1
+            printf '\e[32m%s %s\e[0m%*s\e[90m%s\e[0m\e[K\n' "${prefix}" "${name_disp}" "${pad}" "" "${meta}"
         fi
     done
 
-    if (( total == 0 )); then
-        echo "  ${COLOR_GRAY}(空目录)${COLOR_RESET}"
+    # 状态行
+    local clip_txt="剪贴板: 空" marked_txt="标记: ${#FM_MARKED[@]}"
+    if [[ -n "${FM_CLIP_MODE}" && ${#FM_CLIP_LIST[@]} -gt 0 ]]; then
+        clip_txt="剪贴板: ${FM_CLIP_MODE} ${#FM_CLIP_LIST[@]} 项"
     fi
+    printf '\e[%d;1H\e[K\e[30;47m %s │ %s │ %s\e[0m' $(( rows - 1 )) "${clip_txt}" "${marked_txt}" "${FM_STATUS_MSG}"
+    FM_STATUS_MSG=""
 
-    echo ""
-    echo "  ${COLOR_GRAY}--- 第 ${FM_PAGE}/${total_pages} 页 | 共 ${total} 项 ---${COLOR_RESET}"
-    echo ""
-    echo "  ${COLOR_BOLD}命令:${COLOR_RESET} 序号=进入/操作  ..=上级  a=操作菜单  s=搜索"
-    echo "        t=目录树  b=书签  r=刷新  q=退出"
-    echo "  ${COLOR_GRAY}直接输入序号进入目录，输入 a 选择文件操作${COLOR_RESET}"
+    # 帮助行
+    printf '\e[%d;1H\e[K\e[90m ↑↓选择 Enter/双击打开 ←返回 Space多选 c复制 x剪切 v粘贴 d删除 a操作 n新建 f搜索 b书签 t目录树 q退出\e[0m' "${rows}"
+
+    # 光标放回当前行
+    printf '\e[%d;1H' $(( 5 + FM_CURSOR - FM_OFFSET ))
 }
+
+# ------------------------------------------------------------
+# 光标移动（带滚动）
+# 参数：$1 增量（负=上）
+# ------------------------------------------------------------
+fm_cursor_move() {
+    local delta="$1" nc
+    (( FM_LEN == 0 )) && return
+    nc=$(( FM_CURSOR + delta ))
+    (( nc < 0 )) && nc=0
+    (( nc >= FM_LEN )) && nc=$(( FM_LEN - 1 ))
+    FM_CURSOR=${nc}
+    if (( FM_CURSOR < FM_OFFSET )); then
+        FM_OFFSET=${FM_CURSOR}
+    fi
+    if (( FM_CURSOR - FM_OFFSET >= FM_WINH )); then
+        FM_OFFSET=$(( FM_CURSOR - FM_WINH + 1 ))
+    fi
+}
+
+# ------------------------------------------------------------
+# 当前光标条目完整路径
+# 输出：路径（空=无条目）
+# ------------------------------------------------------------
+fm_cur_full() {
+    if (( FM_CURSOR < FM_LEN )); then
+        local rest="${FM_LIST[$FM_CURSOR]#*|}"
+        echo "${rest#*|}"
+    fi
+}
+
+# ------------------------------------------------------------
+# 打开光标条目：目录→进入；文件→快捷操作菜单
+# ------------------------------------------------------------
+fm_open_cursor() {
+    local full
+    full=$(fm_cur_full)
+    [[ -z "${full}" ]] && return
+    if [[ -d "${full}" ]]; then
+        FM_PWD="${full}"
+        FM_CURSOR=0; FM_OFFSET=0
+    else
+        fm_tui_do fm_operate_single "${full}" "$(basename "${full}")"
+    fi
+}
+
+# ------------------------------------------------------------
+# 切换光标条目多选标记
+# ------------------------------------------------------------
+fm_toggle_mark() {
+    local full
+    full=$(fm_cur_full)
+    [[ -z "${full}" ]] && return
+    local i p
+    for i in "${!FM_MARKED[@]}"; do
+        if [[ "${FM_MARKED[$i]}" == "${full}" ]]; then
+            unset 'FM_MARKED[$i]'
+            FM_MARKED=("${FM_MARKED[@]}")
+            return
+        fi
+    done
+    FM_MARKED+=("${full}")
+}
+
+# ============================================================
+# 剪贴板（复制/剪切/粘贴）
+# ============================================================
+
+# ------------------------------------------------------------
+# 读剪贴板文件（第一行模式，其余为路径）
+# ------------------------------------------------------------
+fm_clip_read() {
+    FM_CLIP_MODE=""; FM_CLIP_LIST=()
+    [[ -f "${FM_CLIPBOARD}" ]] || return
+    local line="" i=0
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        i=$((i + 1))
+        if (( i == 1 )); then
+            FM_CLIP_MODE="${line}"
+        else
+            FM_CLIP_LIST+=("${line}")
+        fi
+    done < "${FM_CLIPBOARD}"
+}
+
+# ------------------------------------------------------------
+# 写入剪贴板：光标条目 + 已标记条目
+# 参数：$1 模式 copy/cut
+# ------------------------------------------------------------
+fm_clip_set() {
+    local mode="$1" paths=() cur="" p
+    cur=$(fm_cur_full)
+    [[ -n "${cur}" ]] && paths+=("${cur}")
+    for p in "${FM_MARKED[@]}"; do
+        [[ "${p}" != "${cur}" ]] && paths+=("${p}")
+    done
+    if (( ${#paths[@]} == 0 )); then
+        FM_STATUS_MSG="无选中条目，请用 ↑↓ 移动或 Space 标记"
+        return
+    fi
+    mkdir -p "$(dirname "${FM_CLIPBOARD}")" 2>/dev/null || true
+    printf '%s\n' "${mode}" > "${FM_CLIPBOARD}"
+    printf '%s\n' "${paths[@]}" >> "${FM_CLIPBOARD}"
+    FM_CLIP_MODE="${mode}"
+    FM_CLIP_LIST=("${paths[@]}")
+    FM_STATUS_MSG="已${mode} ${#paths[@]} 项，按 v 粘贴"
+    audit_log "剪贴板${mode} ${#paths[@]}项" "成功"
+}
+
+# ------------------------------------------------------------
+# 粘贴：copy=复制 cut=移动，目标为当前目录
+# ------------------------------------------------------------
+fm_clip_paste() {
+    fm_clip_read
+    if [[ -z "${FM_CLIP_MODE}" || ${#FM_CLIP_LIST[@]} -eq 0 ]]; then
+        echo "  剪贴板为空，请先在文件管理器中 c/x 复制或剪切"
+        press_enter
+        return
+    fi
+    echo "  将${FM_CLIP_MODE} ${#FM_CLIP_LIST[@]} 项 → $(fm_icon_path "${FM_PWD}")"
+    local p name target
+    for p in "${FM_CLIP_LIST[@]}"; do
+        echo "    - ${p}"
+    done
+    echo ""
+    if ! confirm_action "执行${FM_CLIP_MODE}粘贴？"; then
+        return
+    fi
+    local ok=0 fail=0
+    for p in "${FM_CLIP_LIST[@]}"; do
+        [[ -e "${p}" ]] || { echo "   跳过（不存在）: ${p}"; fail=$((fail + 1)); continue; }
+        name=$(basename "${p}")
+        target="${FM_PWD}/${name}"
+        if [[ "${FM_CLIP_MODE}" == "cut" ]]; then
+            if [[ "$(dirname "${p}")" == "${FM_PWD}" ]]; then
+                echo "   跳过（同目录）: ${name}"
+                continue
+            fi
+            if mv "${p}" "${target}" 2>/dev/null; then ok=$((ok + 1)); else fail=$((fail + 1)); echo "   移动失败: ${p}"; fi
+        else
+            if cp -r "${p}" "${target}" 2>/dev/null; then ok=$((ok + 1)); else fail=$((fail + 1)); echo "   复制失败: ${p}"; fi
+        fi
+    done
+    echo "  完成：成功 ${ok}，失败 ${fail}"
+    audit_log "粘贴(${FM_CLIP_MODE}) 成功${ok}/失败${fail}" "成功"
+    if [[ "${FM_CLIP_MODE}" == "cut" ]]; then
+        : > "${FM_CLIPBOARD}"
+        FM_CLIP_MODE=""; FM_CLIP_LIST=()
+    fi
+    press_enter
+}
+
+# ------------------------------------------------------------
+# 删除：光标条目 + 已标记条目（危险保护）
+# ------------------------------------------------------------
+fm_delete_marked() {
+    local paths=() cur="" p
+    cur=$(fm_cur_full)
+    [[ -n "${cur}" ]] && paths+=("${cur}")
+    for p in "${FM_MARKED[@]}"; do
+        [[ "${p}" != "${cur}" ]] && paths+=("${p}")
+    done
+    if (( ${#paths[@]} == 0 )); then
+        echo "  无选中条目"
+        press_enter
+        return
+    fi
+    echo "  将删除 ${#paths[@]} 项："
+    for p in "${paths[@]}"; do
+        echo "    - ${p}"
+    done
+    echo ""
+    if ! confirm_action "确认删除？此操作不可恢复"; then
+        return
+    fi
+    local ok=0 fail=0
+    for p in "${paths[@]}"; do
+        if rm -rf "${p}" 2>/dev/null; then
+            ok=$((ok + 1))
+        else
+            fail=$((fail + 1))
+            echo "   删除失败: ${p}"
+        fi
+    done
+    echo "  删除完成：成功 ${ok}，失败 ${fail}"
+    audit_log "批量删除 ${ok} 项" "成功"
+    FM_MARKED=()
+    press_enter
+}
+
+# ============================================================
+# 鼠标事件处理
+# ============================================================
+
+# ------------------------------------------------------------
+# 命中工具栏按钮
+# 参数：$1 列号
+# 输出：按钮 id（无命中则空）
+# ------------------------------------------------------------
+fm_toolbar_hit() {
+    local x="$1" line id start w
+    for line in "${FM_TOOLBAR_BOXES[@]}"; do
+        start="${line%%|*}"
+        w="${line#*|}"
+        id="${w#*|}"
+        w="${w%%|*}"
+        if (( x >= start && x < start + w )); then
+            echo "${id}"
+            return
+        fi
+    done
+}
+
+# ------------------------------------------------------------
+# 工具栏按钮动作
+# 参数：$1 按钮 id
+# ------------------------------------------------------------
+fm_toolbar_action() {
+    local id="$1"
+    case "${id}" in
+        back|up) fm_go_parent; FM_CURSOR=0; FM_OFFSET=0 ;;
+        ref) : ;;
+        new) fm_tui_do fm_mkdir_prompt ;;
+        srch) fm_tui_do fm_search ;;
+        bm) fm_tui_do fm_bookmark_menu ;;
+        tree) fm_tui_do fm_tree_menu ;;
+        copy) fm_clip_set "copy" ;;
+        cut) fm_clip_set "cut" ;;
+        paste) fm_tui_do fm_clip_paste ;;
+        ren) fm_tui_do fm_rename_file "$(fm_cur_full)" ;;
+        del) fm_tui_do fm_delete_marked ;;
+        quit) FM_QUIT=1 ;;
+        *) : ;;
+    esac
+}
+
+# ------------------------------------------------------------
+# 鼠标事件分发：滚轮/左键/工具栏/列表行（双击打开）
+# ------------------------------------------------------------
+fm_handle_mouse() {
+    local b="${FM_EVB}" x="${FM_EVX}" y="${FM_EVY}" idx now
+    # 仅处理按下事件，忽略释放/拖拽/修饰/右键
+    if (( FM_EVPRESS == 0 )); then return; fi
+    # 滚轮
+    if (( b == 64 )); then fm_cursor_move -1; return; fi
+    if (( b == 65 )); then fm_cursor_move 1; return; fi
+    # 仅处理左键（忽略拖拽/修饰/右键）
+    if (( b != 0 )); then return; fi
+    # 工具栏（第 2 行）
+    if (( y == 2 )); then
+        local hit
+        hit=$(fm_toolbar_hit "${x}")
+        [[ -n "${hit}" ]] && fm_toolbar_action "${hit}"
+        return
+    fi
+    # 列表区（从第 5 行开始）
+    if (( y >= 5 )); then
+        idx=$(( FM_OFFSET + y - 5 ))
+        (( idx >= FM_LEN )) && return
+        now=$(date +%s 2>/dev/null || echo 0)
+        if [[ "${idx}" == "${FM_DBL_ROW}" && $(( now - FM_DBL_TIME )) -lt 1 ]]; then
+            # 双击：打开
+            FM_CURSOR=${idx}
+            fm_open_cursor
+            FM_DBL_ROW=-1; FM_DBL_TIME=0
+        else
+            FM_CURSOR=${idx}
+            FM_DBL_ROW=${idx}
+            FM_DBL_TIME=${now}
+        fi
+    fi
+}
+
+# ============================================================
+# 键盘/鼠标事件总分发（返回非零=退出 TUI）
+# ============================================================
+fm_handle_event() {
+    if [[ "${FM_EV}" == "mouse" ]]; then
+        fm_handle_mouse
+        return 0
+    fi
+    case "${FM_EVK}" in
+        q|Q|QUIT) return 1 ;;
+        ESC|LEFT|BACK) fm_go_parent; FM_CURSOR=0; FM_OFFSET=0 ;;
+        UP) fm_cursor_move -1 ;;
+        DOWN) fm_cursor_move 1 ;;
+        PAGEUP) fm_cursor_move -FM_WINH ;;
+        PAGEDOWN) fm_cursor_move FM_WINH ;;
+        HOME) FM_CURSOR=0; FM_OFFSET=0 ;;
+        END) FM_CURSOR=$(( FM_LEN - 1 )); FM_OFFSET=0 ;;
+        ENTER|RIGHT) fm_open_cursor ;;
+        SPACE) fm_toggle_mark ;;
+        r|R) : ;;
+        f|F|/) fm_tui_do fm_search ;;
+        c|C) fm_clip_set "copy" ;;
+        x|X) fm_clip_set "cut" ;;
+        v|V) fm_tui_do fm_clip_paste ;;
+        d|D) fm_tui_do fm_delete_marked ;;
+        a|A) fm_tui_do fm_action_menu ;;
+        b|B) fm_tui_do fm_bookmark_menu ;;
+        t|T) fm_tui_do fm_tree_menu ;;
+        m|M) fm_tui_do fm_chmod_file "$(fm_cur_full)" ;;
+        n|N) fm_tui_do fm_mkdir_prompt ;;
+        e|E) fm_tui_do fm_edit_file "$(fm_cur_full)" ;;
+        o|O) fm_tui_do fm_view_file "$(fm_cur_full)" ;;
+        *) : ;;
+    esac
+    return 0
+}
+
+# ============================================================
+# 主循环
+# ============================================================
+fm_main() {
+    # 校验初始目录
+    [[ -d "${FM_PWD}" ]] || FM_PWD="${HOME}"
+    if [[ ! -t 0 ]]; then
+        echo "文件管理器 TUI 需要 TTY 终端运行（请直接登录终端后执行）"
+        return 1
+    fi
+    FM_LIST=(); FM_LEN=0
+    FM_CURSOR=0; FM_OFFSET=0; FM_WINH=10
+    FM_MARKED=(); FM_CLIP_MODE=""; FM_CLIP_LIST=()
+    FM_TOOLBAR_BOXES=(); FM_STATUS_MSG=""; FM_QUIT=0
+    FM_DBL_ROW=-1; FM_DBL_TIME=0
+
+    fm_tui_enter
+    while (( FM_QUIT == 0 )); do
+        fm_refresh_list
+        fm_render
+        fm_read_event
+        if ! fm_handle_event; then
+            break
+        fi
+    done
+    fm_tui_leave
+    return 0
+}
+
+# ============================================================
+# 通用工具
+# ============================================================
 
 # ------------------------------------------------------------
 # 路径显示（home 缩写）
@@ -187,48 +708,10 @@ fm_human_size() {
 # ------------------------------------------------------------
 fm_go_parent() {
     FM_PWD="$(dirname "${FM_PWD}")"
-    FM_PAGE=1
 }
 
 # ------------------------------------------------------------
-# 数字/名称选择处理
-# 参数：$1 用户输入
-# ------------------------------------------------------------
-fm_select() {
-    local input="$1"
-    # 支持直接输入目录名
-    if [[ "${input}" =~ ^[0-9]+$ ]]; then
-        local n=$((input - 2))   # 1=.. 实际从 2 开始
-        if [[ "${input}" == "1" ]]; then
-            fm_go_parent
-            return
-        fi
-        local item="${FM_ITEMS[$((n - 1))]:-}"
-        [[ -z "${item}" ]] && return
-        local type="${item%%|*}"
-        local rest="${item#*|}"
-        local full="${rest#*|}"
-        if [[ "${type}" == "D" ]]; then
-            FM_PWD="${full}"
-            FM_PAGE=1
-        fi
-        return
-    fi
-
-    # 支持直接输入相对路径进入
-    if [[ -d "${FM_PWD}/${input}" ]]; then
-        FM_PWD="${FM_PWD}/${input}"
-        FM_PAGE=1
-    elif [[ -e "${FM_PWD}/${input}" ]]; then
-        fm_operate_single "${FM_PWD}/${input}" "$(basename "${input}")"
-    else
-        log_warning "无效输入: ${input}"
-        sleep 1
-    fi
-}
-
-# ------------------------------------------------------------
-# 单文件快捷操作（输入文件名直接命中时）
+# 单文件快捷操作（Enter/双击/右键打开文件时）
 # 参数：$1 完整路径  $2 显示名
 # ------------------------------------------------------------
 fm_operate_single() {
@@ -288,7 +771,6 @@ fm_action_menu() {
 # ------------------------------------------------------------
 fm_pick_file() {
     local prompt="$1"
-    # 列出当前目录的文件
     local files=()
     local f i=0
     for f in "${FM_PWD}"/*; do
@@ -391,7 +873,6 @@ fm_copy_file() {
         base=$(basename "${full}")
         target="${FM_PWD}/副本_${base}"
     else
-        # 支持绝对路径或相对当前目录
         if [[ "${dest}" == /* ]]; then
             target="${dest}"
         else
@@ -518,7 +999,6 @@ fm_touch_prompt() {
 # a. 压缩打包（tar.gz/zip 自动判断）
 # ------------------------------------------------------------
 fm_compress_prompt() {
-    # 列出可打包对象（当前目录下所有条目）
     local items=()
     local f i=0
     for f in "${FM_PWD}"/*; do
@@ -607,7 +1087,6 @@ fm_tree_walk() {
     (( depth >= max_depth )) && return
     (( cnt > 500 )) && { echo "${prefix}${COLOR_GRAY}... (条目过多，已截断)${COLOR_RESET}"; return; }
 
-    # 收集条目（排除隐藏）
     local entries=()
     local f
     for f in "${dir}"/*; do
@@ -717,7 +1196,6 @@ fm_bookmark_menu() {
                 target=$(sed -n "$((bk_idx - 1))p" "${FM_BOOKMARKS}" 2>/dev/null)
                 if [[ -d "${target}" ]]; then
                     FM_PWD="${target}"
-                    FM_PAGE=1
                 else
                     log_error "书签路径不存在: ${target}"
                 fi

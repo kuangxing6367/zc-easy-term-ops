@@ -40,7 +40,7 @@ module_menu() {
     echo "======================================"
     echo " 1. AI 对话模式（自然语言描述问题）"
     echo " 2. 查看支持的诊断场景"
-    echo " 3. OpenAI 配置状态 / 连接测试"
+    echo " 3. OpenAI 交互式配置（Key/地址/模型/测试/启用&停用）"
     echo " 0. 返回主菜单"
     echo "======================================"
 }
@@ -50,7 +50,7 @@ module_execute() {
     case "${choice}" in
         1) ai_chat_loop ;;
         2) ai_show_scenarios ;;
-        3) ai_llm_status ;;
+        3) ai_llm_config ;;
         0) return 0 ;;
         *) log_error "无效选项: ${choice}" ;;
     esac
@@ -1367,33 +1367,141 @@ ai_llm_chat_loop() {
 }
 
 # ------------------------------------------------------------
-# 配置状态展示 + 连接测试（子菜单选项 3）
+# 配置摘要展示（不触发网络）
+# ------------------------------------------------------------
+ai_llm_show() {
+    local key="${OPENAI_API_KEY:-}"
+    if ai_llm_enabled; then
+        echo "  状态:      ${COLOR_GREEN}已启用大模型${COLOR_RESET}（${OPENAI_MODEL:-gpt-4o-mini}）"
+    else
+        echo "  状态:      ${COLOR_YELLOW}未启用（使用内置规则引擎）${COLOR_RESET}"
+    fi
+    echo "  接口地址:  ${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    echo "  模型:      ${OPENAI_MODEL:-gpt-4o-mini}"
+    echo "  超时(秒):  ${OPENAI_TIMEOUT:-120}"
+    if [[ -n "${key}" ]]; then
+        if [[ ${#key} -ge 12 ]]; then
+            echo "  API Key:   ${key:0:6}...${key: -4}"
+        else
+            echo "  API Key:   <已设置>"
+        fi
+    else
+        echo "  API Key:   ${COLOR_RED}未设置${COLOR_RESET}"
+    fi
+}
+
+# ------------------------------------------------------------
+# 写入用户配置文件（存在则替换字段值，不存在则追加；立即生效）
+# 参数：$1 键名  $2 值
+# ------------------------------------------------------------
+ai_llm_write_conf() {
+    local key="$1" val="$2"
+    local conf="${CONFIG_FILE:-${HOME}/.zetops/zetops.conf}"
+    mkdir -p "$(dirname "${conf}")" 2>/dev/null || true
+    [[ -f "${conf}" ]] || : > "${conf}"
+    # 清理危险字符（双引号/反斜杠/命令替换），防止破坏配置或注入
+    val="${val//\"/}"
+    val="${val//\\/}"
+    val="${val//\`/}"
+    val="${val//\$/}"
+    # 删除同名旧行后追加，避免 sed 特殊字符问题
+    grep -vE "^[[:space:]]*${key}[[:space:]]*=.*" "${conf}" 2>/dev/null > "${conf}.tmp" || true
+    printf '%s="%s"\n' "${key}" "${val}" >> "${conf}.tmp"
+    mv "${conf}.tmp" "${conf}"
+    # 立即生效，无需重启 zetops
+    eval "${key}=\"${val}\""
+    log_info "已更新配置 ${key}"
+}
+
+# ------------------------------------------------------------
+# 配置状态展示 + 连接测试（会话内 status 命令等使用）
 # ------------------------------------------------------------
 ai_llm_status() {
     clear
-    echo "${COLOR_BOLD}═══════════ OpenAI / 大模型配置状态 ═══════════${COLOR_RESET}"
-    echo "  接口地址:  ${OPENAI_BASE_URL:-https://api.openai.com/v1}"
-    echo "  模型:      ${OPENAI_MODEL:-gpt-4o-mini}"
-    local key="${OPENAI_API_KEY:-}"
-    if [[ -n "${key}" ]]; then
-        if [[ ${#key} -ge 12 ]]; then
-            echo "  API Key:   ${key:0:6}...${key: -4}（已配置）"
-        else
-            echo "  API Key:   已配置"
-        fi
-    else
-        echo "  API Key:   ${COLOR_RED}未配置 — AI 对话仍使用内置规则引擎${COLOR_RESET}"
-    fi
+    echo "${COLOR_BOLD}═══════════ OpenAI / 大模型连接测试 ═══════════${COLOR_RESET}"
+    ai_llm_show
     echo "${COLOR_BOLD}════════════════════════════════════════════════${COLOR_RESET}"
     echo ""
     if ai_llm_enabled; then
         echo "  ${COLOR_BOLD}▶ 执行连接测试（发送一条最小请求）...${COLOR_RESET}"
         ai_llm_test
     else
-        echo "  ${COLOR_YELLOW}  请在 ~/.zetops/zetops.conf 填写 OPENAI_API_KEY 后重启 zetops 再测试${COLOR_RESET}"
-        echo "  ${COLOR_GRAY}  支持任何 OpenAI 兼容接口：官方 / 国内中转 / DeepSeek / Qwen / Ollama(需兼容模式)${COLOR_RESET}"
+        echo "  ${COLOR_YELLOW}  未配置 API Key，AI 对话使用内置规则引擎${COLOR_RESET}"
+        echo "  ${COLOR_GRAY}  去模块菜单 3 交互式填入即可：官方 / 国内中转 / DeepSeek / Qwen${COLOR_RESET}"
     fi
     echo ""
+}
+
+# ------------------------------------------------------------
+# OpenAI 交互式配置（子菜单选项 3）：填 Key/地址/模型/超时/测试/停用
+# ------------------------------------------------------------
+ai_llm_config() {
+    local ans="" v=""
+    while true; do
+        clear
+        echo "${COLOR_BOLD}═══════════ OpenAI 交互式配置 ═══════════${COLOR_RESET}"
+        ai_llm_show
+        echo "${COLOR_BOLD}════════════════════════════════════════════${COLOR_RESET}"
+        echo ""
+        echo " 1. 设置 API Key"
+        echo " 2. 设置接口地址 (BASE_URL，官方/中转通用)"
+        echo " 3. 设置模型 (如 gpt-4o-mini / deepseek-chat / qwen-plus)"
+        echo " 4. 设置请求超时(秒)"
+        echo " 5. 连接测试"
+        echo " 6. 清空 API Key（停用大模型，回退规则引擎）"
+        echo " 0. 返回"
+        ans=""
+        read -r -p "请输入选项 (0-6): " ans || ans="q"
+        ans=$(echo "${ans}" | tr -d '[:space:]')
+        case "${ans}" in
+            1)
+                v=""
+                read -r -p "  请输入 API Key（留空不改）: " v
+                [[ -n "${v}" ]] && ai_llm_write_conf OPENAI_API_KEY "${v}"
+                ;;
+            2)
+                v=""
+                read -r -p "  接口地址 [${OPENAI_BASE_URL:-https://api.openai.com/v1}]: " v
+                v="${v:-${OPENAI_BASE_URL:-https://api.openai.com/v1}}"
+                ai_llm_write_conf OPENAI_BASE_URL "${v}"
+                ;;
+            3)
+                v=""
+                read -r -p "  模型名 [${OPENAI_MODEL:-gpt-4o-mini}]: " v
+                v="${v:-${OPENAI_MODEL:-gpt-4o-mini}}"
+                ai_llm_write_conf OPENAI_MODEL "${v}"
+                ;;
+            4)
+                v=""
+                read -r -p "  请求超时秒数 [${OPENAI_TIMEOUT:-120}]: " v
+                v="${v:-${OPENAI_TIMEOUT:-120}}"
+                if [[ "${v}" =~ ^[0-9]+$ ]]; then
+                    ai_llm_write_conf OPENAI_TIMEOUT "${v}"
+                else
+                    echo "  ${COLOR_RED}超时需为数字${COLOR_RESET}"
+                fi
+                ;;
+            5)
+                clear
+                echo "${COLOR_BOLD}═══════════ OpenAI 连接测试 ═══════════${COLOR_RESET}"
+                ai_llm_show
+                echo "${COLOR_BOLD}════════════════════════════════════════════${COLOR_RESET}"
+                echo ""
+                if ai_llm_enabled; then
+                    ai_llm_test
+                else
+                    echo "  ${COLOR_YELLOW}请先设置 API Key（选项 1）${COLOR_RESET}"
+                fi
+                ;;
+            6)
+                ai_llm_write_conf OPENAI_API_KEY ""
+                echo "  ${COLOR_YELLOW}已停用大模型，AI 对话恢复为内置规则引擎${COLOR_RESET}"
+                ;;
+            0|q|Q) break ;;
+            *) echo "  ${COLOR_YELLOW}无效输入，请输入 0-6${COLOR_RESET}" ;;
+        esac
+        echo ""
+    done
 }
 
 # ------------------------------------------------------------
