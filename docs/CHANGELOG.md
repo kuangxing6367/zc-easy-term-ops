@@ -2,6 +2,14 @@
 
 本文件记录 zc-easy-term-ops（ZETOPS）的版本更新历史。
 
+## [1.3.3] - 2026-08-07
+
+### 修复
+
+- **AI 助手对话崩溃（模块 13）**：`ai_llm_chat_once` 引用了未定义的 `COLOR_CYAN`，在 `set -u` 下报 `COLOR_CYAN: unbound variable` 导致对话中断；改用 `COLOR_BLUE`
+- **远程版本解析（模块 12）**：`self_fetch_remote_version` 只匹配 `ZETOPS_VERSION="x.x.x"` 无法解析 `ZETOPS_VERSION="${ZETOPS_VERSION:-x.x.x}"` 的默认值写法（此前远程版本号被显示为字面量 `${ZETOPS_VERSION:-1.3.2}`）；改为提取三位版本号，兼容两种写法
+- **版本号改为纯字面量**：`core/config.sh` 中 `ZETOPS_VERSION` 由 `${ZETOPS_VERSION:-1.3.3}` 改为 `"1.3.3"`，避免自更新检查误解析
+
 ## [1.3.2] - 2026-08-07
 
 ### 增强（AI 智能运维助手 + 文件管理器 TUI，模块 13/20）

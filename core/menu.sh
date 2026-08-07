@@ -78,7 +78,7 @@ get_user_choice() {
 show_main_menu() {
     clear
     echo "=============================================="
-    echo "  ZETOPS - 交互式Linux运维全能工具箱 v1.3.2"
+    echo "  ZETOPS - 交互式Linux运维全能工具箱 v1.3.3"
     echo "  Interactive Linux Ops Toolkit [Linux运维]"
     echo "=============================================="
     local i
