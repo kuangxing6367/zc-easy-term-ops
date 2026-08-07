@@ -1316,7 +1316,7 @@ ai_llm_chat_once() {
     local payload reply_file out line
     payload=$(ai_llm_build_payload "${user}")
     reply_file=$(mktemp)
-    printf "  ${COLOR_BOLD}${COLOR_CYAN}AI>${COLOR_RESET} "
+    printf "  ${COLOR_BOLD}${COLOR_BLUE}AI>${COLOR_RESET} "
     local reply=""
     while IFS= read -r line; do
         [[ "${line}" != data:* ]] && continue
