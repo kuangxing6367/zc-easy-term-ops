@@ -84,6 +84,7 @@ self_repo_parts() {
 
 # ------------------------------------------------------------
 # 获取远程版本号（读取远程 core/config.sh 的 ZETOPS_VERSION）
+# 兼容两种写法：ZETOPS_VERSION="1.3.2" 与 ${ZETOPS_VERSION:-1.3.2}
 # 参数：$1 owner  $2 repo  $3 branch
 # 输出：版本号（失败时为空）
 # ------------------------------------------------------------
@@ -91,8 +92,9 @@ self_fetch_remote_version() {
     local owner="$1" repo="$2" branch="$3"
     local raw_url="${ZETOPS_GITHUB_MIRROR}https://raw.githubusercontent.com/${owner}/${repo}/${branch}/core/config.sh"
     curl -fsSL --max-time 20 "${raw_url}" 2>/dev/null \
-        | grep -oE '^ZETOPS_VERSION="[^"]*"' \
-        | head -n1 | cut -d'"' -f2 || true
+        | grep -oE 'ZETOPS_VERSION=[^#[:space:]]*' \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+        | head -n1 || true
 }
 
 # ------------------------------------------------------------
