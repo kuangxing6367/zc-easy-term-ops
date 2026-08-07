@@ -30,6 +30,19 @@ REDIS_PORT="6379"
 DOCKER_REGISTRY="docker.io"
 DOCKER_DATA_DIR="/var/lib/docker"
 
+# ---- OpenAI/LLM 配置 [AI Assistant] ----
+# 配置后 AI 智能运维助手自动启用大模型对话（纯 Bash curl 调用，流式输出）
+# 留空 OPENAI_API_KEY 则使用内置无网规则引擎（10+ 场景关键词诊断）
+# 兼容 OpenAI 接口的任意服务均可使用（官方/第三方代理/DeepSeek/Qwen 等）
+# 格式：OPENAI_API_KEY="sk-xxxxx"     （不保存 token，仅用于请求鉴权）
+OPENAI_API_KEY=""
+# 接口地址：官方 https://api.openai.com/v1 ；国内中转/兼容服务填对应地址
+OPENAI_BASE_URL="https://api.openai.com/v1"
+# 模型名：gpt-4o-mini / gpt-4o / deepseek-chat / qwen-plus ...
+OPENAI_MODEL="gpt-4o-mini"
+# 单次请求超时（秒）
+OPENAI_TIMEOUT="120"
+
 # ---- 监控/告警 ----
 MONITOR_ALERT_EMAIL=""
 

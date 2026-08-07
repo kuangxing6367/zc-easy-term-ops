@@ -24,7 +24,7 @@ An interactive, modular Linux operations toolbox (ZETOPS). Provides multi-level 
 | 10 开发部署 | pyenv/nvm/OpenJDK/Go/Rust、Git、Jenkins/SonarQube、Webhook、应用一键部署 |
 | 11 密码权限 | MySQL/PostgreSQL/Redis 密码重置、Linux 密码、sudo 恢复、SSH 密钥生成分发、密码策略检查 |
 | 12 自我更新 | 查看版本、检查更新、从 GitHub 拉取升级（支持国内加速镜像）、更新日志 |
-| 13 AI 智能助手 | 自然语言运维诊断（纯Bash规则引擎零依赖），502/磁盘/CPU/内存/网络/Docker/MySQL/端口 9大场景，交互式修复+验证，多回退策略 |
+| 13 AI 智能助手 | 双引擎：配置 OpenAI Key 后直达大模型对话（纯 Bash curl 流式输出，兼容 OpenAI 官方/中转/DeepSeek/Qwen）；未配置回退纯内置规则引擎零依赖，502/磁盘/CPU/内存/网络/Docker/MySQL/端口 9大场景，交互式修复+验证，多回退策略 |
 | 14 安全基线加固 | CIS 风格基线扫描（空密码/UID=0/权限/SUID/防火墙/SSH/密码策略），逐项确认一键加固 |
 | 15 硬件信息查看 | CPU/内存/磁盘(含smartctl健康度)/网卡/PCI/系统信息一键汇总，纯命令零依赖 |
 | 16 操作审计日志 | 时间\|用户\|模块\|操作\|结果 审计记录（只追加），按用户/模块筛选、统计概览，全局 audit_log() 可被任何模块调用 |

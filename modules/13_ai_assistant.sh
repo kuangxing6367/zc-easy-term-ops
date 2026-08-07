@@ -6,7 +6,8 @@
 # 版本：1.0.0
 # 日期：2026-08-06
 # 说明：
-#   - 纯 Bash 规则引擎，零外部依赖（无 Python/Node/AI API）
+#   - 双引擎：配置 OPENAI_API_KEY 后启用大模型对话（纯 Bash + curl，流式输出）；
+#     未配置则回退为纯 Bash 规则引擎，零外部依赖（无 Python/Node）
 #   - 自然语言输入 → 意图识别 → 自动诊断 → 交互确认 → 执行修复 → 验证
 #   - 支持 9 大运维场景：Web 502/503、服务宕机、磁盘满、CPU 高负载、
 #     内存 OOM、网络不通、Docker 容器、MySQL 连接、端口不通
@@ -16,13 +17,15 @@ set -euo pipefail
 
 module_name="AI 智能运维助手"
 module_short="ai_assistant"
-module_version="1.0.0"
+module_version="1.1.1"
 
 # ---- 多轮上下文（全局） ----
 AI_CTX_INTENT=""       # 上次意图
 AI_CTX_TARGET=""       # 上次目标（服务名/端口/IP/容器名）
-AI_CTX_LAST_CMD=""     # 上次执行的修复命令
-AI_CTX_HISTORY=()      # 对话历史摘要
+AI_CTX_LAST_CMD=""     # 上次执行命令
+AI_CTX_HISTORY=()      # 规则引擎对话历史摘要
+AI_LLM_USER=()         # LLM 对话历史（用户）
+AI_LLM_ASM=()          # LLM 对话历史（AI 回复）
 
 # ============================================================
 # 模块统一接口
@@ -37,6 +40,7 @@ module_menu() {
     echo "======================================"
     echo " 1. AI 对话模式（自然语言描述问题）"
     echo " 2. 查看支持的诊断场景"
+    echo " 3. OpenAI 配置状态 / 连接测试"
     echo " 0. 返回主菜单"
     echo "======================================"
 }
@@ -46,6 +50,7 @@ module_execute() {
     case "${choice}" in
         1) ai_chat_loop ;;
         2) ai_show_scenarios ;;
+        3) ai_llm_status ;;
         0) return 0 ;;
         *) log_error "无效选项: ${choice}" ;;
     esac
@@ -71,6 +76,15 @@ ai_chat_loop() {
     echo "║  输入 'help' 查看示例 | 'exit' 或 '退出' 返回              ║"
     echo "╚══════════════════════════════════════════════════════════╝"
     echo "${COLOR_RESET}"
+
+    # 配置了 OpenAI Key → 大模型对话模式；否则回退内置规则引擎
+    if ai_llm_enabled; then
+        echo "${COLOR_GREEN}  █ 已启用大模型对话 (${OPENAI_MODEL})${COLOR_RESET}"
+        echo ""
+        ai_llm_chat_loop
+        return
+    fi
+    echo "  ▷ 未配置 OPENAI_API_KEY，使用内置规则引擎（配置方法请查看 菜单3）"
 
     local input=""
     while true; do
@@ -1207,6 +1221,198 @@ ai_show_history() {
         echo "  ${COLOR_GRAY}(暂无历史记录)${COLOR_RESET}"
     fi
     echo ""
+}
+
+# ============================================================
+# OpenAI / 大模型对话层（纯 Bash + curl，零 Python/Node 依赖）
+# ============================================================
+# 配置见 ~/.zetops/zetops.conf：OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
+# 未配置 Key 时 ai_llm_enabled 返回假，AI 模块自动走内置规则引擎
+# ============================================================
+
+# ------------------------------------------------------------
+# 是否已启用 AI（配置 Key 且存在 curl）
+# 返回：0=启用 1=未启用
+# ------------------------------------------------------------
+ai_llm_enabled() {
+    [[ -n "${OPENAI_API_KEY:-}" ]] || return 1
+    check_command curl || { log_warning "缺少 curl，无法调用大模型接口"; return 1; }
+    return 0
+}
+
+# ------------------------------------------------------------
+# JSON 字符串转义（纯 Bash，适配 OpenAI Chat API）
+# 参数：$1 原始字符串
+# 输出：转义后的 JSON 字符串
+# ------------------------------------------------------------
+ai_json_escape() {
+    local s="$1"
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\t'/\\t}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    printf '%s' "${s}"
+}
+
+# ------------------------------------------------------------
+# 系统提示词（引导模型做运维诊断）
+# ------------------------------------------------------------
+ai_llm_system_prompt() {
+    printf '你是一名资深 Linux 运维工程师（内嵌于 ZETOPS 交互式工具箱）。用户会提出服务器运维问题，请：1. 用简洁中文回答，先给诊断思路，再给可直接执行的命令（用代码块包裹）。2. 涉及 rm -rf / 清空/格式化/防火墙/批量删除等高危操作时必须醒目警告并提示先备份。3. 信息不足时直接请用户补充服务名、报错或日志。4. 不要编造不存在的命令或工具，不确定时如实说明。'
+}
+
+# ------------------------------------------------------------
+# 构造 chat/completions 请求体（携带最近 8 轮上下文）
+# 参数：$1 用户输入
+# 输出：完整 JSON 请求体
+# ------------------------------------------------------------
+ai_llm_build_payload() {
+    local user="$1"
+    local esc msgs
+    esc=$(ai_json_escape "$(ai_llm_system_prompt)")
+    msgs="{\"role\":\"system\",\"content\":\"${esc}\"}"
+    local i len start
+    len=${#AI_LLM_USER[@]}
+    start=0
+    (( len > 8 )) && start=$((len - 8))
+    for ((i = start; i < len; i++)); do
+        msgs+=",{\"role\":\"user\",\"content\":\"$(ai_json_escape "${AI_LLM_USER[$i]}")\"}"
+        msgs+=",{\"role\":\"assistant\",\"content\":\"$(ai_json_escape "${AI_LLM_ASM[$i]}")\"}"
+    done
+    msgs+=",{\"role\":\"user\",\"content\":\"$(ai_json_escape "${user}")\"}"
+    printf '{"model":"%s","stream":true,"messages":[%s]}' "${OPENAI_MODEL}" "${msgs}"
+}
+
+# ------------------------------------------------------------
+# 解析单行 SSE（data: {...}）中的增量内容
+# 参数：$1 SSE 行  ；输出：内容增量（无内容时返回非零）
+# ------------------------------------------------------------
+ai_llm_delta_content() {
+    local line="$1"
+    local q=$'\x01' out
+    line="${line#data: }"
+    [[ "${line}" == "[DONE]" || -z "${line}" ]] && return 1
+    # 临时把 JSON 转义引号 \" 换成占位符，避免误截取
+    line=${line//\\\"/$q}
+    out=$(printf '%s' "${line}" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p')
+    [[ -z "${out}" ]] && return 1
+    out=${out//$q/\"}
+    out=${out//\\n/$'\n'}
+    out=${out//\\t/$'\t'}
+    out=${out//\\r/}
+    out=${out//\\\\/\\}
+    printf '%s' "${out}"
+    return 0
+}
+
+# ------------------------------------------------------------
+# 发起一次对话请求（流式输出，回复写入上下文）
+# 参数：$1 用户输入
+# 返回：0=成功收到回复 1=无回复
+# ------------------------------------------------------------
+ai_llm_chat_once() {
+    local user="$1"
+    local payload reply_file out line
+    payload=$(ai_llm_build_payload "${user}")
+    reply_file=$(mktemp)
+    printf "  ${COLOR_BOLD}${COLOR_CYAN}AI>${COLOR_RESET} "
+    local reply=""
+    while IFS= read -r line; do
+        [[ "${line}" != data:* ]] && continue
+        out=$(ai_llm_delta_content "${line}") && {
+            printf "%s" "${out}"
+            printf "%s" "${out}" >> "${reply_file}"
+        }
+    done < <(curl -sS -N --max-time "${OPENAI_TIMEOUT:-120}" \
+        -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "${OPENAI_BASE_URL%/}/chat/completions" 2>&1) || true
+    echo ""
+    reply=$(cat "${reply_file}" 2>/dev/null || true)
+    rm -f "${reply_file}"
+    if [[ -z "${reply}" ]]; then
+        echo "  ${COLOR_RED}❌ 未收到模型回复。请检查：API Key 是否正确 / 网络与代理 / 接口是否兼容 OpenAI 格式${COLOR_RESET}"
+        return 1
+    fi
+    AI_LLM_USER+=("${user}")
+    AI_LLM_ASM+=("${reply}")
+    return 0
+}
+
+# ------------------------------------------------------------
+# 大模型对话主循环
+# ------------------------------------------------------------
+ai_llm_chat_loop() {
+    echo "${COLOR_BOLD}  ▸ 已连接 ${OPENAI_MODEL}@${OPENAI_BASE_URL}${COLOR_RESET}"
+    echo "  ▸ 命令: help 帮助 | clear 清屏 | re 重置上下文 | status 查看配置 | exit 退出"
+    local input=""
+    while true; do
+        echo -n "${COLOR_BOLD}${COLOR_GREEN}AI>${COLOR_RESET} "
+        read -r input || { echo ""; break; }
+        input="${input#"${input%%[![:space:]]*}"}"
+        input="${input%"${input##*[![:space:]]}"}"
+        [[ -z "${input}" ]] && continue
+        case "${input}" in
+            exit|quit|q|退出) echo "${COLOR_BLUE}ZETOPS AI 已退出，再见！${COLOR_RESET}"; break ;;
+            help|帮助|?|？)    echo ""; echo "  直接描述运维问题即可，例如：'nginx 502 如何排查'、'磁盘满了怎么清理'、'写一个 MySQL 全量备份脚本'"; echo ""; continue ;;
+            clear|cls|清屏)  clear; continue ;;
+            re|reset|重置)   AI_LLM_USER=(); AI_LLM_ASM=(); echo "  ${COLOR_YELLOW}已清空对话上下文${COLOR_RESET}"; continue ;;
+            status|配置)      ai_llm_status; echo ""; continue ;;
+        esac
+        ai_llm_chat_once "${input}" || true
+        echo ""
+    done
+}
+
+# ------------------------------------------------------------
+# 配置状态展示 + 连接测试（子菜单选项 3）
+# ------------------------------------------------------------
+ai_llm_status() {
+    clear
+    echo "${COLOR_BOLD}═══════════ OpenAI / 大模型配置状态 ═══════════${COLOR_RESET}"
+    echo "  接口地址:  ${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    echo "  模型:      ${OPENAI_MODEL:-gpt-4o-mini}"
+    local key="${OPENAI_API_KEY:-}"
+    if [[ -n "${key}" ]]; then
+        if [[ ${#key} -ge 12 ]]; then
+            echo "  API Key:   ${key:0:6}...${key: -4}（已配置）"
+        else
+            echo "  API Key:   已配置"
+        fi
+    else
+        echo "  API Key:   ${COLOR_RED}未配置 — AI 对话仍使用内置规则引擎${COLOR_RESET}"
+    fi
+    echo "${COLOR_BOLD}════════════════════════════════════════════════${COLOR_RESET}"
+    echo ""
+    if ai_llm_enabled; then
+        echo "  ${COLOR_BOLD}▶ 执行连接测试（发送一条最小请求）...${COLOR_RESET}"
+        ai_llm_test
+    else
+        echo "  ${COLOR_YELLOW}  请在 ~/.zetops/zetops.conf 填写 OPENAI_API_KEY 后重启 zetops 再测试${COLOR_RESET}"
+        echo "  ${COLOR_GRAY}  支持任何 OpenAI 兼容接口：官方 / 国内中转 / DeepSeek / Qwen / Ollama(需兼容模式)${COLOR_RESET}"
+    fi
+    echo ""
+}
+
+# ------------------------------------------------------------
+# 最小连接测试（不写入上下文）
+# ------------------------------------------------------------
+ai_llm_test() {
+    local payload out line
+    payload=$(printf '{"model":"%s","stream":true,"messages":[{"role":"user","content":"只回复两个字：正常"}]}' "${OPENAI_MODEL}")
+    printf "  ${COLOR_BOLD}模型回复:${COLOR_RESET} "
+    while IFS= read -r line; do
+        [[ "${line}" != data:* ]] && continue
+        out=$(ai_llm_delta_content "${line}") && printf "%s" "${out}"
+    done < <(curl -sS -N --max-time "${OPENAI_TIMEOUT:-60}" \
+        -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "${OPENAI_BASE_URL%/}/chat/completions" 2>&1) || true
+    echo ""
+    echo "  ${COLOR_GRAY}若上面有回复则连接正常；无回复请检查 Key/网络/接口地址${COLOR_RESET}"
 }
 
 # ============================================================

@@ -34,6 +34,16 @@ ZETOPS_UPDATE_BRANCH="${ZETOPS_UPDATE_BRANCH:-main}"
 # GitHub 加速镜像前缀（国内加速，如 https://ghfast.top/ ；留空=直连 GitHub）
 ZETOPS_GITHUB_MIRROR="${ZETOPS_GITHUB_MIRROR:-}"
 
+# ---- OpenAI/LLM 配置（AI 智能运维助手模块使用，纯 Bash curl 调用） ----
+# 留空 OPENAI_API_KEY 则 AI 模块自动回退为内置规则引擎
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+# 兼容接口地址（官方：https://api.openai.com/v1 ；OpenAI 兼容第三方/国内中转：改成对应地址）
+OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+# 模型名（如 gpt-4o-mini / gpt-4o / deepseek-chat / qwen-plus）
+OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
+# 单次请求超时（秒）
+OPENAI_TIMEOUT="${OPENAI_TIMEOUT:-120}"
+
 # API 节点配置
 API_BASE_URL=""
 API_TIMEOUT=10

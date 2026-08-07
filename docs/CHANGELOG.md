@@ -2,6 +2,18 @@
 
 本文件记录 zc-easy-term-ops（ZETOPS）的版本更新历史。
 
+## [1.3.1] - 2026-08-07
+
+### 增强（AI 智能运维助手）
+
+- **OpenAI / 大模型对话接入（纯 Bash，零 Python/Node 依赖）**
+  - 新增配置项：`~/.zetops/zetops.conf` 中 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_TIMEOUT`
+  - 配置 Key 后 AI 对话自动切换为大模型模式，流式输出（curl + SSE 解析，含转义引号/换行还原）
+  - 未配置 Key 自动回退内置规则引擎，互不影响
+  - 兼容任何 OpenAI Chat 格式接口：官方 / 国内中转 / DeepSeek / Qwen 等
+  - 子菜单新增"OpenAI 配置状态/连接测试"，API Key 脱敏显示
+  - 多轮上下文（保留最近 8 轮），`re` 命令可随时重置上下文
+
 ## [1.3.0] - 2026-08-06
 
 ### 新增（模块 23~26，共 4 个新模块）
