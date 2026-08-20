@@ -3,21 +3,25 @@
 # 文件：modules/13_ai_assistant.sh
 # 功能：ZETOPS AI 智能运维助手 [AI Ops Assistant]
 # 作者：zc 团队
-# 版本：1.0.0
+# 版本：1.2.0
 # 日期：2026-08-06
 # 说明：
 #   - 双引擎：配置 OPENAI_API_KEY 后启用大模型对话（纯 Bash + curl，流式输出）；
 #     未配置则回退为纯 Bash 规则引擎，零外部依赖（无 Python/Node）
+#   - 大模型模式支持「函数调用」(Function Calling)：AI 可调用工具获取服务器
+#     真实状态（系统/磁盘/服务/端口/日志/Docker/MySQL），并可申请执行命令
+#     （高危命令拒绝，写操作需用户确认），再基于结果给出诊断与修复
 #   - 自然语言输入 → 意图识别 → 自动诊断 → 交互确认 → 执行修复 → 验证
-#   - 支持 9 大运维场景：Web 502/503、服务宕机、磁盘满、CPU 高负载、
-#     内存 OOM、网络不通、Docker 容器、MySQL 连接、端口不通
+#   - 支持 11 大运维场景：Web 502/503、服务宕机、磁盘满、CPU 高负载、
+#     内存 OOM、网络不通、Docker 容器、MySQL 连接、端口不通、
+#     Nginx 配置检查、日志分析；另有「一键全面体检」
 #   - 多轮对话上下文，支持跟进诊断与验证
 # ============================================================
 set -euo pipefail
 
 module_name="AI 智能运维助手"
 module_short="ai_assistant"
-module_version="1.1.1"
+module_version="1.2.0"
 
 # ---- 多轮上下文（全局） ----
 AI_CTX_INTENT=""       # 上次意图
@@ -41,6 +45,7 @@ module_menu() {
     echo " 1. AI 对话模式（自然语言描述问题）"
     echo " 2. 查看支持的诊断场景"
     echo " 3. OpenAI 交互式配置（Key/地址/模型/测试/启用&停用）"
+    echo " 4. 一键全面体检（快速诊断系统状态）"
     echo " 0. 返回主菜单"
     echo "======================================"
 }
@@ -51,6 +56,7 @@ module_execute() {
         1) ai_chat_loop ;;
         2) ai_show_scenarios ;;
         3) ai_llm_config ;;
+        4) ai_diag_all ;;
         0) return 0 ;;
         *) log_error "无效选项: ${choice}" ;;
     esac
@@ -115,6 +121,10 @@ ai_chat_loop() {
                 ai_show_history
                 continue
                 ;;
+            diag|体检|全检|全面检查|整体诊断)
+                ai_diag_all
+                continue
+                ;;
         esac
 
         # 解析意图并执行
@@ -141,7 +151,7 @@ ai_process_input() {
     if [[ "${intent}" == "unknown" ]]; then
         echo ""
         echo "${COLOR_YELLOW}  抱歉，我暂时无法理解这个问题。${COLOR_RESET}"
-        echo "${COLOR_GRAY}  支持的场景：502/503错误、服务宕机、磁盘满、CPU高、内存OOM、网络不通、Docker容器、MySQL连接、端口不通${COLOR_RESET}"
+        echo "${COLOR_GRAY}  支持的场景：502/503错误、服务宕机、磁盘满、CPU高、内存OOM、网络不通、Docker容器、MySQL连接、端口不通、Web配置检查、日志分析、一键体检${COLOR_RESET}"
         echo "${COLOR_GRAY}  输入 'help' 查看示例${COLOR_RESET}"
         echo ""
         return
@@ -161,6 +171,9 @@ ai_process_input() {
         docker_issue)   ai_handle_docker_issue "${input}" ;;
         mysql_issue)    ai_handle_mysql_issue "${input}" ;;
         port_blocked)   ai_handle_port_blocked "${input}" ;;
+        nginx_conf)     ai_handle_nginx_conf "${input}" ;;
+        log_issue)      ai_handle_log_issue "${input}" ;;
+        diag_all)       ai_diag_all ;;
         *)              ai_handle_unknown "${input}" ;;
     esac
 
@@ -182,11 +195,31 @@ ai_parse_intent() {
     local lower
     lower=$(echo "${input}" | tr '[:upper:]' '[:lower:]')
 
-    # ---- Web 502/503/500 错误 ----
+    # ---- 一键全面体检 ----
+    if [[ "${lower}" =~ (体检|全检|全面检查|整体诊断|diag|健康检查) ]]; then
+        echo "diag_all"
+        return
+    fi
+
+    # ---- Web 502/503/500 错误（优先于配置检查） ----
     if [[ "${lower}" =~ (502|503|500|bad gateway|网关) ]] || \
        [[ "${lower}" =~ (nginx|apache).*(错误|error|故障|fail|502|503|500) ]] || \
        [[ "${lower}" =~ (错误|error|故障).*(nginx|apache|web|网关) ]]; then
         echo "web_error"
+        return
+    fi
+
+    # ---- Nginx/Apache 配置检查 ----
+    if [[ "${lower}" =~ (nginx|apache|httpd).*(语法|配置|check|test|config|conf) ]] || \
+       [[ "${lower}" =~ (配置|conf|语法).*(nginx|apache|httpd) ]]; then
+        echo "nginx_conf"
+        return
+    fi
+
+    # ---- 日志分析 ----
+    if [[ "${lower}" =~ (日志|log).*(分析|查看|检查|tail|grep|报错|error) ]] || \
+       [[ "${lower}" =~ (看|查|分析).*(日志|log) ]]; then
+        echo "log_issue"
         return
     fi
 
@@ -218,13 +251,6 @@ ai_parse_intent() {
         return
     fi
 
-    # ---- 网络不通 ----
-    if [[ "${lower}" =~ (网络|network|连接|connect|ping|不通|无法访问|超时|timeout) ]] || \
-       [[ "${lower}" =~ (上不了网|连不上|网络故障|network unreachable) ]]; then
-        echo "network_issue"
-        return
-    fi
-
     # ---- Docker 容器问题 ----
     if [[ "${lower}" =~ (docker|容器|container).*(挂|down|停|起不来|失败|fail|重启|restart|异常|error) ]] || \
        [[ "${lower}" =~ (容器.*退出|exited|container.*fail) ]]; then
@@ -232,17 +258,24 @@ ai_parse_intent() {
         return
     fi
 
-    # ---- MySQL 连接问题 ----
+    # ---- MySQL 连接问题（先于网络判断，避免连不上/不通被网络吞掉） ----
     if [[ "${lower}" =~ (mysql|mariadb|数据库|database|sql).*(连接|connect|拒绝|refused|超时|timeout|挂|down|失败|fail) ]] || \
-       [[ "${lower}" =~ (数据库.*连不上|mysql.*down|连接被拒绝) ]]; then
+       [[ "${lower}" =~ (数据库.*连不上|mysql.*down|连接被拒绝|mysql.*连不上) ]]; then
         echo "mysql_issue"
         return
     fi
 
-    # ---- 端口不通 ----
+    # ---- 端口不通（先于网络判断） ----
     if [[ "${lower}" =~ (端口|port).*(不通| blocked|关闭|close|防火墙|firewall|拒绝|refused|无法访问) ]] || \
        [[ "${lower}" =~ (telnet.*不通|端口.*不通|防火墙.*拦截|port.*blocked) ]]; then
         echo "port_blocked"
+        return
+    fi
+
+    # ---- 网络不通（最通用，放最后兜底） ----
+    if [[ "${lower}" =~ (网络|network|连接|connect|ping|不通|无法访问|超时|timeout) ]] || \
+       [[ "${lower}" =~ (上不了网|连不上|网络故障|network unreachable) ]]; then
+        echo "network_issue"
         return
     fi
 
@@ -351,11 +384,32 @@ ai_confirm() {
 # ------------------------------------------------------------
 ai_is_dangerous() {
     local cmd="$1"
-    # 高风险命令模式：递归删除根目录、磁盘格式化、清空防火墙、递归权限修改等
-    if echo "${cmd}" | grep -qiE 'rm -rf /|dd if=.*of=|mkfs|fdisk|chmod -R 777 /|chown -R [^ ]+ /[^ ]|iptables -F|systemctl (stop|disable) firewalld'; then
+    # 高危（直接拒绝执行，不给确认机会）：递归删除根目录、磁盘格式化/写设备、
+    # 清空/关闭防火墙、清空权限、杀 PID1 等不可逆破坏操作
+    if echo "${cmd}" | grep -qiE 'rm -rf /$|rm -rf / |rm -fr /$|rm -fr / |dd if=.*of=/dev/|mkfs|fdisk|parted|chmod -R 777 /|chmod 777 /$|chown -R [^ ]+ /|iptables -F|iptables -P|ufw disable|kill -9 1$|kill -9 -1|rm -rf (/?boot|/?etc|/?root|/?usr|/?lib)( |$)|> /dev/sd'; then
         return 0
     fi
     return 1
+}
+
+# ------------------------------------------------------------
+# 判断命令是否「只读」（无需确认直接执行）
+# 说明：含输出重定向（如 > file、>> file）视为写操作；不在白名单的读命令
+#       一律走二次确认，安全优先（宁多确认、勿漏拦截）
+# 参数：$1 命令字符串
+# 返回：0=只读可直接执行 1=需要确认
+# ------------------------------------------------------------
+ai_is_readonly() {
+    local cmd="$1"
+    # 含管道（可串联写操作）或输出重定向（> file、>> file）一律视为写操作
+    if [[ "${cmd}" == *"|"* ]] || [[ "${cmd}" =~ [^1-9\&]">" ]] || [[ "${cmd}" == *">>"* ]]; then
+        return 1
+    fi
+    case "${cmd}" in
+        ls*|dir*|df*|free*|ps*|top*|htop*|uptime*|date*|who*|w\ |id*|uname*|pwd*|which*|type*|stat*|file*|head*|tail*|cat*|echo*|printf*|grep*|egrep*|awk*|sed\ -n*|sed\ -e*|du*|netstat*|ss*|lsof*|journalctl*|dmesg*|vmstat*|iostat*|sysctl*|nproc*|getconf*|env*|printenv*|hostname*|timedatectl*|lsblk*|nfsstat*|systemctl\ status*|systemctl\ is-*|systemctl\ list-*|systemctl\ show*|systemctl\ cat*|systemctl\ --failed*|docker\ ps*|docker\ stats*|docker\ inspect*|docker\ logs*|docker\ images*|docker\ port*|pip\ list*|pip3\ list*|apt\ list*|yum\ list*|rpm\ -q*|dpkg\ -l*|curl\ -I*|curl\ --head*|wget\ --spider*|mysql\ -e\ *SHOW*|mysql\ -e\ *SELECT*|mariadb\ -e\ *SHOW*|mariadb\ -e\ *SELECT*)
+            return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # ------------------------------------------------------------
@@ -1129,6 +1183,204 @@ ai_handle_port_blocked() {
 }
 
 # ------------------------------------------------------------
+# 场景10：Nginx/Apache 配置检查
+# 参数：$1 用户输入
+# ------------------------------------------------------------
+ai_handle_nginx_conf() {
+    local input="$1"
+    local step=1
+
+    ai_print_step $((step++)) "检测 Web 服务配置"
+    if ! check_command nginx && ! check_command apache2 && ! check_command httpd; then
+        ai_print_finding warn "未安装 Nginx/Apache"
+        return
+    fi
+
+    if check_command nginx; then
+        local conf=""
+        conf=$(nginx -V 2>&1 | tr ' ' '\n' | sed -n 's/^--conf-path=//p' | head -1)
+        [[ -z "${conf}" ]] && conf="/etc/nginx/nginx.conf"
+        if [[ -f "${conf}" ]]; then
+            ai_print_step $((step++)) "配置文件: ${conf}"
+            ai_print_step $((step++)) "语法检查:"
+            local t
+            t=$(nginx -t 2>&1 || true)
+            echo "${t}" | sed 's/^/      /'
+            echo ""
+            ai_print_step $((step++)) "关键配置摘要 (listen/server/proxy):"
+            grep -nE 'listen |server_name |proxy_pass |root ' "${conf}" 2>/dev/null | head -20 | sed 's/^/      /' || true
+        else
+            ai_print_finding warn "配置文件 ${conf} 不存在"
+        fi
+    else
+        ai_print_step $((step++)) "Apache 配置:"
+        apache2ctl -t 2>&1 | sed 's/^/      /' || httpd -t 2>&1 | sed 's/^/      /' || true
+    fi
+    ai_run_verify "查看服务状态" "systemctl status nginx apache2 httpd --no-pager 2>/dev/null | head -20"
+}
+
+# ------------------------------------------------------------
+# 场景11：日志分析（服务日志 / 系统错误日志）
+# 参数：$1 用户输入
+# ------------------------------------------------------------
+ai_handle_log_issue() {
+    local input="$1"
+    local step=1
+    local svc
+    svc=$(ai_extract_service "${input}")
+
+    ai_print_step $((step++)) "日志分析"
+    if [[ -n "${svc}" ]]; then
+        ai_print_step $((step++)) "分析 ${svc} 最近日志:"
+        local out=""
+        if check_command systemctl && systemctl is-active "${svc}" >/dev/null 2>&1; then
+            out=$(journalctl -u "${svc}" --no-pager -n 30 2>/dev/null || true)
+        else
+            case "${svc}" in
+                nginx|httpd|apache)   out=$(tail -n 30 /var/log/nginx/error.log /var/log/apache2/error.log /var/log/httpd/error_log 2>/dev/null || true) ;;
+                mysql|mariadb|mysqld) out=$(tail -n 30 /var/log/mysql/error.log /var/log/mariadb/mariadb.log 2>/dev/null || true) ;;
+                docker)               out=$(journalctl -u docker --no-pager -n 30 2>/dev/null || true) ;;
+                *)                    out="" ;;
+            esac
+        fi
+        if [[ -n "${out}" ]]; then
+            echo "${out}" | sed 's/^/      /'
+            echo ""
+            local err
+            err=$(echo "${out}" | grep -iE 'error|fatal|panic|exception|failed' | head -5 || true)
+            if [[ -n "${err}" ]]; then
+                ai_print_finding error "检测到错误关键字:"
+                echo "${err}" | sed 's/^/      /'
+                ai_run_fix "重启 ${svc} 服务" "sudo systemctl restart ${svc}"
+            else
+                ai_print_finding ok "日志中未发现明显错误"
+            fi
+        else
+            ai_print_finding warn "无日志输出（尝试: journalctl -u ${svc}）"
+        fi
+    else
+        # 未指定服务：查看系统最近错误日志
+        local sys_err
+        sys_err=$(journalctl --no-pager -p err -n 20 2>/dev/null || true)
+        if [[ -n "${sys_err}" ]]; then
+            ai_print_step $((step++)) "系统最近错误日志 (err 级别):"
+            echo "${sys_err}" | sed 's/^/      /'
+        else
+            ai_print_finding ok "系统日志无错误记录"
+        fi
+    fi
+}
+
+# ------------------------------------------------------------
+# 一键全面体检（快速只读诊断，汇总系统状态）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+ai_diag_all() {
+    clear
+    echo "${COLOR_BOLD}${COLOR_BLUE}"
+    echo "═══════════════ ZETOPS 一键全面体检 ═══════════════"
+    echo "${COLOR_RESET}"
+    local fail=0
+
+    ai_print_step 1 "系统负载"
+    local load1 cores
+    load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "0")
+    cores=$(nproc 2>/dev/null || echo 1)
+    if awk "BEGIN{exit !(${load1} > ${cores})}" 2>/dev/null; then
+        ai_print_finding warn "负载 ${load1} 超过核心数 ${cores}"
+        fail=1
+    else
+        ai_print_finding ok "负载 ${load1} / 核心 ${cores}"
+    fi
+
+    ai_print_step 2 "磁盘使用"
+    local high
+    high=$(df -h 2>/dev/null | awk 'NR>1 && $(NF-1)+0 > 80 {print}' || true)
+    if [[ -n "${high}" ]]; then
+        ai_print_finding error "以下分区使用率超 80%:"
+        echo "${high}" | sed 's/^/      /'
+        fail=1
+    else
+        ai_print_finding ok "所有分区使用率 <80%"
+    fi
+
+    ai_print_step 3 "内存"
+    local avail
+    avail=$(free -m 2>/dev/null | awk '/Mem:/{print $7}' || echo "0")
+    if (( avail < 200 )); then
+        ai_print_finding error "可用内存仅 ${avail}MB"
+        fail=1
+    else
+        ai_print_finding ok "可用内存 ${avail}MB"
+    fi
+
+    ai_print_step 4 "失败服务"
+    local failed
+    failed=$(systemctl --failed --no-legend 2>/dev/null || true)
+    if [[ -n "${failed}" ]]; then
+        ai_print_finding warn "存在失败服务:"
+        echo "${failed}" | sed 's/^/      /'
+        fail=1
+    else
+        ai_print_finding ok "无失败服务"
+    fi
+
+    ai_print_step 5 "Web 服务"
+    local web_svc="" found=""
+    for web_svc in nginx apache2 httpd; do
+        if check_command systemctl && systemctl is-active "${web_svc}" >/dev/null 2>&1; then
+            found="${web_svc}"
+            break
+        fi
+    done
+    if [[ -n "${found}" ]]; then
+        ai_print_finding ok "${found} 运行中"
+    else
+        ai_print_finding warn "未检测到运行中的 Web 服务"
+    fi
+
+    ai_print_step 6 "Docker"
+    if check_command docker; then
+        local exited
+        exited=$(docker ps -a --filter "status=exited" --format "{{.Names}}" 2>/dev/null || true)
+        if [[ -n "${exited}" ]]; then
+            ai_print_finding warn "存在已退出容器: ${exited}"
+            fail=1
+        else
+            ai_print_finding ok "Docker 容器正常"
+        fi
+    else
+        ai_print_finding info "未安装 Docker"
+    fi
+
+    ai_print_step 7 "数据库"
+    local db_up=""
+    if check_command systemctl; then
+        local s
+        for s in mysql mysqld mariadb; do
+            if systemctl is-active "${s}" >/dev/null 2>&1; then
+                db_up="${s}"
+                break
+            fi
+        done
+    fi
+    if [[ -n "${db_up}" ]]; then
+        ai_print_finding ok "${db_up} 运行中"
+    else
+        ai_print_finding warn "未检测到运行中的数据库服务"
+    fi
+
+    echo ""
+    if (( fail )); then
+        echo "  ${COLOR_RED}${COLOR_BOLD}发现异常项，建议进入 AI 对话模式逐项排查修复。${COLOR_RESET}"
+    else
+        echo "  ${COLOR_GREEN}${COLOR_BOLD}系统状态良好，未发现明显异常。${COLOR_RESET}"
+    fi
+    echo ""
+}
+
+# ------------------------------------------------------------
 # 未知意图处理
 # 参数：$1 用户输入
 # ------------------------------------------------------------
@@ -1140,7 +1392,7 @@ ai_handle_unknown() {
     ai_show_scenarios_brief
     echo ""
     echo "  ${COLOR_GRAY}请用关键词描述问题，例如:${COLOR_RESET}"
-    echo "  ${COLOR_GRAY}  'nginx 502' / '磁盘满了' / 'cpu 100%' / 'docker 容器起不来'${COLOR_RESET}"
+    echo "  ${COLOR_GRAY}  'nginx 502' / '磁盘满了' / 'cpu 100%' / 'docker 容器起不来' / 'nginx 配置检查' / '看mysql日志'${COLOR_RESET}"
 }
 
 # ============================================================
@@ -1175,6 +1427,9 @@ ai_show_scenarios_brief() {
     echo "  ${COLOR_BOLD}7. Docker 容器${COLOR_RESET}     - 容器退出/启动失败/日志分析"
     echo "  ${COLOR_BOLD}8. MySQL 连接${COLOR_RESET}      - 连接拒绝/服务异常/端口不通"
     echo "  ${COLOR_BOLD}9. 端口不通${COLOR_RESET}        - 端口未监听/防火墙拦截"
+    echo "  ${COLOR_BOLD}10. Web 配置检查${COLOR_RESET}   - Nginx/Apache 语法与配置"
+    echo "  ${COLOR_BOLD}11. 日志分析${COLOR_RESET}       - 服务/系统错误日志分析"
+    echo "  ${COLOR_BOLD}0. 一键全面体检${COLOR_RESET}    - 快速诊断整体系统状态"
 }
 
 # ------------------------------------------------------------
@@ -1192,11 +1447,14 @@ ai_show_help() {
     echo "  ${COLOR_GREEN}AI>${COLOR_RESET} docker 容器一直重启"
     echo "  ${COLOR_GREEN}AI>${COLOR_RESET} cpu 100% 了"
     echo "  ${COLOR_GREEN}AI>${COLOR_RESET} 8080 端口不通"
+    echo "  ${COLOR_GREEN}AI>${COLOR_RESET} nginx 配置检查"
+    echo "  ${COLOR_GREEN}AI>${COLOR_RESET} 看下 mysql 日志"
     echo ""
     echo "  ${COLOR_BOLD}命令:${COLOR_RESET}"
     echo "    help    - 显示帮助"
     echo "    history - 显示对话历史"
     echo "    clear   - 清屏"
+    echo "    diag    - 一键全面体检"
     echo "    exit    - 退出 AI 模式"
     echo ""
 }
@@ -1256,19 +1514,20 @@ ai_json_escape() {
 }
 
 # ------------------------------------------------------------
-# 系统提示词（引导模型做运维诊断）
+# 系统提示词（引导模型做运维诊断 + 使用函数调用获取真实状态）
 # ------------------------------------------------------------
 ai_llm_system_prompt() {
-    printf '你是一名资深 Linux 运维工程师（内嵌于 ZETOPS 交互式工具箱）。用户会提出服务器运维问题，请：1. 用简洁中文回答，先给诊断思路，再给可直接执行的命令（用代码块包裹）。2. 涉及 rm -rf / 清空/格式化/防火墙/批量删除等高危操作时必须醒目警告并提示先备份。3. 信息不足时直接请用户补充服务名、报错或日志。4. 不要编造不存在的命令或工具，不确定时如实说明。'
+    printf '你是一名资深 Linux 运维工程师（内嵌于 ZETOPS 交互式工具箱），可以调用工具获取服务器真实状态（系统信息/磁盘/服务/端口/日志/Docker/MySQL），也能申请执行命令，然后基于真实结果给出诊断与修复建议。使用规则：1. 用简洁中文回答，先诊断后给可执行命令（代码块包裹）。2. 一次只调用一个工具，根据返回结果继续分析，信息足够后再总结；命令执行工具用于诊断或修复，写操作会由用户二次确认。3. 涉及 rm -rf / 清空/格式化/防火墙/批量删除等高危操作时必须醒目警告并提示先备份。4. 不要编造不存在的命令或工具，不确定时如实说明。'
 }
 
 # ------------------------------------------------------------
-# 构造 chat/completions 请求体（携带最近 8 轮上下文）
-# 参数：$1 用户输入
-# 输出：完整 JSON 请求体
+# 构造 chat/completions 的 messages 数组内容（携带最近 8 轮上下文）
+# 参数：$1 用户输入；$2 追加消息（可选，工具调用回合的 assistant+tool 消息）
+# 输出：messages 数组内容（不含外层 [ ]，需调用方包裹）
 # ------------------------------------------------------------
-ai_llm_build_payload() {
+ai_llm_build_messages() {
     local user="$1"
+    local extra="${2:-}"
     local esc msgs
     esc=$(ai_json_escape "$(ai_llm_system_prompt)")
     msgs="{\"role\":\"system\",\"content\":\"${esc}\"}"
@@ -1281,7 +1540,279 @@ ai_llm_build_payload() {
         msgs+=",{\"role\":\"assistant\",\"content\":\"$(ai_json_escape "${AI_LLM_ASM[$i]}")\"}"
     done
     msgs+=",{\"role\":\"user\",\"content\":\"$(ai_json_escape "${user}")\"}"
-    printf '{"model":"%s","stream":true,"messages":[%s]}' "${OPENAI_MODEL}" "${msgs}"
+    [[ -n "${extra}" ]] && msgs+=",${extra}"
+    printf '%s' "${msgs}"
+}
+
+# ------------------------------------------------------------
+# 工具(tools)定义：AI 可调用的运维函数（OpenAI Function Calling 格式）
+# 输出：tools 数组 JSON
+# ------------------------------------------------------------
+ai_llm_tools_json() {
+    printf '%s' '[{"type":"function","function":{"name":"get_system_info","description":"获取服务器基础信息：系统版本、内核、CPU核心数、内存、负载、磁盘使用率","parameters":{"type":"object","properties":{},"required":[]}}},{"type":"function","function":{"name":"get_disk_usage","description":"查看磁盘使用情况（df -h）与主要大目录占用","parameters":{"type":"object","properties":{},"required":[]}}},{"type":"function","function":{"name":"get_service_status","description":"查看systemd服务或进程的运行状态与进程信息","parameters":{"type":"object","properties":{"service":{"type":"string","description":"服务名，如 nginx/mysql/docker"}},"required":["service"]}}},{"type":"function","function":{"name":"get_port_status","description":"检查端口是否正在监听","parameters":{"type":"object","properties":{"port":{"type":"string","description":"端口号，如 8080"}},"required":["port"]}}},{"type":"function","function":{"name":"get_logs","description":"查看服务最近日志（journalctl 或常见日志文件）","parameters":{"type":"object","properties":{"service":{"type":"string","description":"服务名，如 nginx/mysql/docker"},"lines":{"type":"string","description":"日志行数，默认20"}},"required":["service"]}}},{"type":"function","function":{"name":"get_docker_status","description":"查看Docker/Podman容器运行状态与异常容器","parameters":{"type":"object","properties":{},"required":[]}}},{"type":"function","function":{"name":"get_mysql_status","description":"查看MySQL/MariaDB服务、端口与连接状态","parameters":{"type":"object","properties":{},"required":[]}}},{"type":"function","function":{"name":"run_command","description":"在服务器上执行一条shell命令（读操作可直接执行；写/修复操作由用户二次确认）","parameters":{"type":"object","properties":{"command":{"type":"string","description":"要执行的完整shell命令"}},"required":["command"]}}}]'
+}
+
+# ------------------------------------------------------------
+# 从函数参数 JSON 中提取字段值
+# 入参为「转义形式」参数（如 {\"service\":\"nginx\"}），其层级含义：
+#   结构引号  = \"          值内转义引号 = \\\"     字面双反斜杠 = \\\\
+# 依次用占位符保护更深层转义，最后将结构引号还原为裸引号，再以裸引号锚定键名提取。
+# 参数：$1 字段名  $2 转义形式 JSON 对象字符串
+# 输出：字段值
+# ------------------------------------------------------------
+ai_tool_arg() {
+    local key="$1" obj="$2" v
+    local t="${obj}"
+    # 1) 保护字面双反斜杠 \\\\ -> \x02（先处理最深一层）
+    t=${t//\\\\\\\\/$'\x02'}
+    # 2) 保护值内转义引号 \\\" -> \x01
+    t=${t//\\\\\\\"/$'\x01'}
+    # 3) 结构引号 \" -> "（此时仅剩单层转义引号）
+    t=${t//\\\"/\"}
+    # 提取：带引号值 / 裸数值
+    v=$(printf '%s' "${t}" | sed -n -e 's/.*"'"${key}"'": *"\([^"]*\)".*/\1/p' \
+                                    -e 's/.*"'"${key}"'": *\([0-9][^",}]*\).*/\1/p' | head -1)
+    # 还原值内转义：JSON换行/制表/回车、占位符
+    v=${v//\\n/$'\n'}
+    v=${v//\\t/$'\t'}
+    v=${v//\\r/}
+    v=${v//$'\x01'/\"}
+    v=${v//$'\x02'/\\}
+    printf '%s' "${v}"
+}
+
+# ------------------------------------------------------------
+# 解析响应中的第一个工具调用（tool_call）
+# 参数：$1 响应文件路径
+# 输出：无（写入全局 AI_TOOL_ID / AI_TOOL_NAME / AI_TOOL_ARGS_RAW / AI_TOOL_ARGS）
+# 返回：0=解析成功 1=无工具调用或解析失败
+# ------------------------------------------------------------
+ai_llm_parse_tool_calls() {
+    local resp="$1"
+    local q=$'\x01'
+    local raw head tmp
+    raw=$(tr -d '\n' < "${resp}")
+    AI_TOOL_ID=""; AI_TOOL_NAME=""; AI_TOOL_ARGS_RAW=""; AI_TOOL_ARGS=""
+    [[ "${raw}" != *'"tool_calls"'* ]] && return 1
+
+    # 从 "tool_calls":[ 之后开始（避免误取顶层 id），
+    # sed 贪婪匹配取最后一个工具调用（id/name/arguments 均来自同一调用）
+    head=${raw#*'"tool_calls":['}
+
+    AI_TOOL_ID=$(printf '%s' "${head}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
+    AI_TOOL_NAME=$(printf '%s' "${head}" | sed -n 's/.*"function":{"name":"\([^"]*\)".*/\1/p' | head -1)
+
+    tmp=${head//\\\"/$q}
+    AI_TOOL_ARGS_RAW=$(printf '%s' "${tmp}" | sed -n 's/.*"arguments":"\([^"]*\)".*/\1/p' | head -1)
+    AI_TOOL_ARGS_RAW=${AI_TOOL_ARGS_RAW//$q/\\\"}
+
+    AI_TOOL_ARGS=${AI_TOOL_ARGS_RAW//\\\"/\"}
+    AI_TOOL_ARGS=${AI_TOOL_ARGS//\\\\/\\}
+    AI_TOOL_ARGS=${AI_TOOL_ARGS//\\n/$'\n'}
+    AI_TOOL_ARGS=${AI_TOOL_ARGS//\\t/$'\t'}
+    AI_TOOL_ARGS=${AI_TOOL_ARGS//\\r/}
+    [[ -n "${AI_TOOL_NAME}" ]]
+}
+
+# ============================================================
+# AI 工具执行层（Tool Dispatch）
+# ============================================================
+
+# ------------------------------------------------------------
+# 工具：系统信息
+# ------------------------------------------------------------
+ai_tool_sysinfo() {
+    echo "系统: $(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || echo '未知')"
+    echo "内核: $(uname -r 2>/dev/null || echo '?')   架构: $(uname -m 2>/dev/null || echo '?')"
+    echo "主机名: $(hostname 2>/dev/null || echo '?')   运行时长: $(uptime -p 2>/dev/null || echo '?')"
+    echo "CPU核心: $(nproc 2>/dev/null || echo '?')   负载: $(uptime 2>/dev/null | grep -o 'load average:.*' || echo '?')"
+    echo "--- 内存 (free -h) ---"
+    free -h 2>/dev/null || echo "无法读取内存信息"
+    echo "--- 磁盘 (df -h /) ---"
+    df -h / 2>/dev/null || echo "无法读取磁盘信息"
+}
+
+# ------------------------------------------------------------
+# 工具：磁盘使用情况
+# ------------------------------------------------------------
+ai_tool_disk() {
+    echo "--- df -h ---"
+    df -h 2>/dev/null || echo "无法读取磁盘信息"
+    echo "--- 大目录占用 (Top 10) ---"
+    du -sh /var/log /tmp /home /root /data /opt /var/lib 2>/dev/null | sort -rh | head -10 || true
+}
+
+# ------------------------------------------------------------
+# 工具：服务状态
+# ------------------------------------------------------------
+ai_tool_service() {
+    local svc="$1"
+    if [[ -z "${svc}" ]]; then
+        echo "缺少 service 参数"
+        return
+    fi
+    if check_command systemctl; then
+        echo "is-active: $(systemctl is-active "${svc}" 2>/dev/null || echo 'unknown')"
+        echo "--- systemctl status ---"
+        systemctl status "${svc}" --no-pager -n 10 2>/dev/null | head -20 || echo "（服务状态不可用）"
+    elif check_command service; then
+        service "${svc}" status 2>/dev/null | head -20 || echo "服务状态不可用"
+    fi
+    echo "--- 进程 ---"
+    pgrep -a "${svc}" 2>/dev/null | head -5 || echo "未找到 ${svc} 进程"
+}
+
+# ------------------------------------------------------------
+# 工具：端口状态
+# ------------------------------------------------------------
+ai_tool_port() {
+    local port="$1"
+    if [[ -z "${port}" ]]; then
+        echo "缺少 port 参数"
+        return
+    fi
+    ss -tlnp 2>/dev/null | grep ":${port} " && echo "端口 ${port} 已监听" || echo "端口 ${port} 未监听"
+}
+
+# ------------------------------------------------------------
+# 工具：查看日志
+# ------------------------------------------------------------
+ai_tool_logs() {
+    local svc="$1" lines="${2:-20}"
+    if [[ -z "${svc}" ]]; then
+        echo "缺少 service 参数"
+        return
+    fi
+    [[ "${lines}" =~ ^[0-9]+$ ]] || lines=20
+    if check_command systemctl && systemctl is-active "${svc}" >/dev/null 2>&1; then
+        journalctl -u "${svc}" --no-pager -n "${lines}" 2>/dev/null | tail -n "${lines}" || true
+    else
+        case "${svc}" in
+            nginx|httpd|apache)   tail -n "${lines}" /var/log/nginx/error.log /var/log/apache2/error.log /var/log/httpd/error_log 2>/dev/null || echo "未找到 ${svc} 日志文件" ;;
+            mysql|mariadb|mysqld) tail -n "${lines}" /var/log/mysql/error.log /var/log/mariadb/mariadb.log 2>/dev/null || echo "未找到数据库日志文件" ;;
+            docker)               journalctl -u docker --no-pager -n "${lines}" 2>/dev/null | tail -n "${lines}" || echo "未找到 docker 日志" ;;
+            *)                    echo "无日志来源（可尝试 journalctl -u ${svc}）" ;;
+        esac
+    fi
+}
+
+# ------------------------------------------------------------
+# 工具：Docker 状态
+# ------------------------------------------------------------
+ai_tool_docker() {
+    local dc=""
+    if check_command docker; then
+        dc="docker"
+    elif check_command podman; then
+        dc="podman"
+    else
+        echo "Docker/Podman 未安装"
+        return
+    fi
+    echo "--- ${dc} ps -a ---"
+    ${dc} ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | head -25 || echo "无法列出容器"
+    echo "--- 异常容器 ---"
+    ${dc} ps -a --filter "status=exited" --filter "status=dead" --format "{{.Names}}: {{.Status}}" 2>/dev/null || true
+    echo "--- 磁盘占用 ---"
+    ${dc} system df 2>/dev/null | head -10 || true
+}
+
+# ------------------------------------------------------------
+# 工具：MySQL 状态
+# ------------------------------------------------------------
+ai_tool_mysql() {
+    local svc="mysql" client="mysql" admin="mysqladmin"
+    if check_command mariadb; then
+        client="mariadb"; admin="mariadb-admin"; svc="mariadb"
+    fi
+    if check_command systemctl && systemctl list-unit-files 2>/dev/null | grep -q mysqld; then
+        svc="mysqld"
+    fi
+    echo "服务: ${svc}  状态: $(systemctl is-active "${svc}" 2>/dev/null || echo 'unknown')"
+    if ss -tlnp 2>/dev/null | grep -q ':3306 '; then
+        echo "端口 3306 已监听"
+    else
+        echo "端口 3306 未监听"
+    fi
+    if timeout 5 "${admin}" ping >/dev/null 2>&1; then
+        echo "数据库连接正常"
+    else
+        echo "数据库连接失败（可能服务异常或需要密码）"
+    fi
+}
+
+# ------------------------------------------------------------
+# 工具：执行命令（高危拒绝 / 写操作需用户确认 / 只读命令直接执行）
+# 说明：交互提示写入 stderr，避免被命令替换吞掉
+# ------------------------------------------------------------
+ai_tool_run() {
+    local cmd="$1"
+    if [[ -z "${cmd}" ]]; then
+        echo "工具调用缺少 command 参数"
+        return
+    fi
+    echo "[待执行] ${cmd}"
+    if ai_is_dangerous "${cmd}"; then
+        echo "已拒绝：命令被识别为不可逆危险操作（如递归删根目录、格式化磁盘、杀 PID1、清防火墙等）"
+        return
+    fi
+    # 只读命令直接执行，无需确认
+    if ai_is_readonly "${cmd}"; then
+        ai_timeout 60 bash -c "${cmd}" 2>&1 | head -50 || echo "（命令执行出错，返回码 ${PIPESTATUS[0]:-?}）"
+        return
+    fi
+    # 写/控制类命令二次确认
+    printf "  ${COLOR_YELLOW}⚠️  AI 请求执行写操作，请确认${COLOR_RESET}" >&2
+    local ans=""
+    printf " [y/N]: " >&2
+    read -r ans || ans="n"
+    if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
+        ai_timeout 60 bash -c "${cmd}" 2>&1 | head -50 || echo "（命令执行出错，返回码 ${PIPESTATUS[0]:-?}）"
+    else
+        echo "用户已取消执行"
+    fi
+}
+
+# ------------------------------------------------------------
+# 工具分发器（按名称调用对应工具；关闭 errexit，防单个工具失败中断）
+# 参数：$1 工具名  $2 参数 JSON
+# ------------------------------------------------------------
+ai_tool_dispatch() {
+    set +e
+    local name="$1" args="${2:-}"
+    case "${name}" in
+        get_system_info)    ai_tool_sysinfo ;;
+        get_disk_usage)     ai_tool_disk ;;
+        get_service_status) ai_tool_service "$(ai_tool_arg service "${args}")" ;;
+        get_port_status)    ai_tool_port "$(ai_tool_arg port "${args}")" ;;
+        get_logs)           ai_tool_logs "$(ai_tool_arg service "${args}")" "$(ai_tool_arg lines "${args}")" ;;
+        get_docker_status)  ai_tool_docker ;;
+        get_mysql_status)   ai_tool_mysql ;;
+        run_command)        ai_tool_run "$(ai_tool_arg command "${args}")" ;;
+        *)                  echo "未知工具: ${name}" ;;
+    esac
+    return 0
+}
+
+# ------------------------------------------------------------
+# 从非流式响应中提取 content（纯文本回复）
+# 参数：$1 响应文件路径
+# 输出：内容
+# 返回：0=提取到 1=无内容
+# ------------------------------------------------------------
+ai_llm_extract_content() {
+    local file="$1" q=$'\x01' raw out
+    raw=$(tr -d '\n' < "${file}")
+    raw=${raw//\\\"/$q}
+    out=$(printf '%s' "${raw}" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p' | head -1)
+    [[ -z "${out}" ]] && return 1
+    out=${out//$q/\"}
+    out=${out//\\n/$'\n'}
+    out=${out//\\t/$'\t'}
+    out=${out//\\r/}
+    out=${out//\\\\/\\}
+    printf '%s' "${out}"
+    return 0
 }
 
 # ------------------------------------------------------------
@@ -1307,31 +1838,98 @@ ai_llm_delta_content() {
 }
 
 # ------------------------------------------------------------
-# 发起一次对话请求（流式输出，回复写入上下文）
+# 发起一次对话请求
+#  - 函数调用开启时：非流式多轮（AI→工具→执行→回传→AI…），最后输出文本
+#  - 函数调用关闭时：直接流式输出
 # 参数：$1 用户输入
 # 返回：0=成功收到回复 1=无回复
 # ------------------------------------------------------------
 ai_llm_chat_once() {
     local user="$1"
-    local payload reply_file out line
-    payload=$(ai_llm_build_payload "${user}")
-    reply_file=$(mktemp)
-    printf "  ${COLOR_BOLD}${COLOR_BLUE}AI>${COLOR_RESET} "
-    local reply=""
-    while IFS= read -r line; do
-        [[ "${line}" != data:* ]] && continue
-        out=$(ai_llm_delta_content "${line}") && {
-            printf "%s" "${out}"
-            printf "%s" "${out}" >> "${reply_file}"
-        }
-    done < <(curl -sS -N --max-time "${OPENAI_TIMEOUT:-120}" \
-        -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d "${payload}" \
-        "${OPENAI_BASE_URL%/}/chat/completions" 2>&1) || true
-    echo ""
-    reply=$(cat "${reply_file}" 2>/dev/null || true)
-    rm -f "${reply_file}"
+    local msgs payload out line reply=""
+    local tools_enabled=0
+    [[ "${OPENAI_TOOLS:-on}" == "on" ]] && tools_enabled=1
+
+    msgs=$(ai_llm_build_messages "${user}")
+
+    # ============ 工具模式（Function Calling） ============
+    if (( tools_enabled )); then
+        local resp_file extra="" rounds=0 tresult=""
+        resp_file=$(mktemp)
+        payload="{\"model\":\"${OPENAI_MODEL}\",\"stream\":false,\"messages\":[${msgs}],\"tools\":[$(ai_llm_tools_json)],\"tool_choice\":\"auto\"}"
+        if ! curl -sS --max-time "${OPENAI_TIMEOUT:-120}" \
+            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            -o "${resp_file}" "${OPENAI_BASE_URL%/}/chat/completions" 2>/dev/null; then
+            echo "  ${COLOR_RED}❌ 请求失败，请检查网络与接口${COLOR_RESET}"
+            rm -f "${resp_file}"
+            return 1
+        fi
+
+        # 工具调用循环（最多 4 轮）
+        while (( rounds < 4 )) && grep -q '"tool_calls"' "${resp_file}"; do
+            echo "  ${COLOR_GREEN}🔧 AI 正在调用工具...${COLOR_RESET}"
+            if ! ai_llm_parse_tool_calls "${resp_file}"; then
+                echo "  ${COLOR_YELLOW}⚠️  工具调用解析失败，已忽略${COLOR_RESET}"
+                break
+            fi
+            echo "  ${COLOR_GRAY}  工具: ${AI_TOOL_NAME}  参数: ${AI_TOOL_ARGS}${COLOR_RESET}"
+            echo "  ${COLOR_GRAY}  ──────────────────────────${COLOR_RESET}"
+            tresult=""
+            tresult=$(ai_tool_dispatch "${AI_TOOL_NAME}" "${AI_TOOL_ARGS_RAW}") || tresult="（工具执行返回异常）"
+            echo "${tresult}" | head -30 | sed 's/^/    /'
+            echo "  ${COLOR_GRAY}  ──────────────────────────${COLOR_RESET}"
+
+            # 回传 assistant(tool_calls) + tool 结果，进入下一轮
+            extra+=",{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"$(ai_json_escape "${AI_TOOL_ID}")\",\"type\":\"function\",\"function\":{\"name\":\"$(ai_json_escape "${AI_TOOL_NAME}")\",\"arguments\":\"${AI_TOOL_ARGS_RAW}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"$(ai_json_escape "${AI_TOOL_ID}")\",\"content\":\"$(ai_json_escape "${tresult}")\"}"
+            rounds=$((rounds + 1))
+
+            rm -f "${resp_file}"
+            resp_file=$(mktemp)
+            payload="{\"model\":\"${OPENAI_MODEL}\",\"stream\":false,\"messages\":[$(ai_llm_build_messages "${user}" "${extra}")],\"tools\":[$(ai_llm_tools_json)],\"tool_choice\":\"auto\"}"
+            if ! curl -sS --max-time "${OPENAI_TIMEOUT:-120}" \
+                -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "${payload}" \
+                -o "${resp_file}" "${OPENAI_BASE_URL%/}/chat/completions" 2>/dev/null; then
+                echo "  ${COLOR_RED}❌ 工具回合请求失败${COLOR_RESET}"
+                break
+            fi
+        done
+
+        # 输出最终文本
+        printf "  ${COLOR_BOLD}${COLOR_BLUE}AI>${COLOR_RESET} "
+        if reply=$(ai_llm_extract_content "${resp_file}"); then
+            printf "%s" "${reply}"
+            echo ""
+        else
+            echo "  ${COLOR_RED}❌ 未收到模型文本回复${COLOR_RESET}"
+        fi
+        rm -f "${resp_file}"
+
+    # ============ 传统流式模式（无工具） ============
+    else
+        payload="{\"model\":\"${OPENAI_MODEL}\",\"stream\":true,\"messages\":[${msgs}]}"
+        printf "  ${COLOR_BOLD}${COLOR_BLUE}AI>${COLOR_RESET} "
+        local reply_file
+        reply_file=$(mktemp)
+        while IFS= read -r line; do
+            [[ "${line}" != data:* ]] && continue
+            out=$(ai_llm_delta_content "${line}") && {
+                printf "%s" "${out}"
+                printf "%s" "${out}" >> "${reply_file}"
+            }
+        done < <(curl -sS -N --max-time "${OPENAI_TIMEOUT:-120}" \
+            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${OPENAI_BASE_URL%/}/chat/completions" 2>&1) || true
+        echo ""
+        reply=$(cat "${reply_file}" 2>/dev/null || true)
+        rm -f "${reply_file}"
+    fi
+
     if [[ -z "${reply}" ]]; then
         echo "  ${COLOR_RED}❌ 未收到模型回复。请检查：API Key 是否正确 / 网络与代理 / 接口是否兼容 OpenAI 格式${COLOR_RESET}"
         return 1
@@ -1346,6 +1944,11 @@ ai_llm_chat_once() {
 # ------------------------------------------------------------
 ai_llm_chat_loop() {
     echo "${COLOR_BOLD}  ▸ 已连接 ${OPENAI_MODEL}@${OPENAI_BASE_URL}${COLOR_RESET}"
+    if [[ "${OPENAI_TOOLS:-on}" == "on" ]]; then
+        echo "  ▸ ${COLOR_GREEN}函数调用已开启${COLOR_RESET}：AI 可读取真实系统状态，可申请执行命令（写操作需确认）"
+    else
+        echo "  ▸ ${COLOR_YELLOW}函数调用已关闭${COLOR_RESET}：仅文本对话（可在 菜单3 开启）"
+    fi
     echo "  ▸ 命令: help 帮助 | clear 清屏 | re 重置上下文 | status 查看配置 | exit 退出"
     local input=""
     while true; do
@@ -1379,6 +1982,11 @@ ai_llm_show() {
     echo "  接口地址:  ${OPENAI_BASE_URL:-https://api.openai.com/v1}"
     echo "  模型:      ${OPENAI_MODEL:-gpt-4o-mini}"
     echo "  超时(秒):  ${OPENAI_TIMEOUT:-120}"
+    if [[ "${OPENAI_TOOLS:-on}" == "on" ]]; then
+        echo "  函数调用:  ${COLOR_GREEN}开启${COLOR_RESET}（AI 可调用工具获取系统真实状态）"
+    else
+        echo "  函数调用:  ${COLOR_YELLOW}关闭${COLOR_RESET}（仅纯文本对话）"
+    fi
     if [[ -n "${key}" ]]; then
         if [[ ${#key} -ge 12 ]]; then
             echo "  API Key:   ${key:0:6}...${key: -4}"
@@ -1467,9 +2075,10 @@ ai_llm_config() {
         echo " 4. 设置请求超时(秒)"
         echo " 5. 连接测试"
         echo " 6. 清空 API Key（停用大模型，回退规则引擎）"
+        echo " 7. 函数调用开关（AI 读取系统真实状态 / 执行命令）"
         echo " 0. 返回"
         ans=""
-        read -r -p "请输入选项 (0-6): " ans || ans="q"
+        read -r -p "请输入选项 (0-7): " ans || ans="q"
         ans=$(echo "${ans}" | tr -d '[:space:]')
         case "${ans}" in
             1)
@@ -1511,8 +2120,17 @@ ai_llm_config() {
                 ai_llm_write_conf OPENAI_API_KEY ""
                 echo "  ${COLOR_YELLOW}已停用大模型，AI 对话恢复为内置规则引擎${COLOR_RESET}"
                 ;;
+            7)
+                if [[ "${OPENAI_TOOLS:-on}" == "on" ]]; then
+                    ai_llm_write_conf OPENAI_TOOLS "off"
+                    echo "  ${COLOR_YELLOW}已关闭函数调用（仅纯文本对话）${COLOR_RESET}"
+                else
+                    ai_llm_write_conf OPENAI_TOOLS "on"
+                    echo "  ${COLOR_GREEN}已开启函数调用（AI 可调用工具获取系统真实状态）${COLOR_RESET}"
+                fi
+                ;;
             0|q|Q) break ;;
-            *) echo "  ${COLOR_YELLOW}无效输入，请输入 0-6${COLOR_RESET}" ;;
+            *) echo "  ${COLOR_YELLOW}无效输入，请输入 0-7${COLOR_RESET}" ;;
         esac
         echo ""
     done

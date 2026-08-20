@@ -16,6 +16,7 @@
 | | `confirm_action <描述>` | 危险操作二次确认（输入 yes 或 CONFIRM） |
 | | `show_spinner <描述>` / `stop_spinner` | 耗时操作旋转动画 |
 | | `press_enter` / `read_input <变量> <提示> <默认>` | 交互输入工具 |
+| | `backup_file <路径>` | 统一备份入口：生成 `${路径}.bak.<时间戳>` 副本并输出备份路径（修改任何配置文件前必须先调用，失败返回非零） |
 | `core/config.sh` | `load_config` / `get_config_value <key> <默认>` | 加载/读取 `~/.zetops/zetops.conf` |
 | | `load_api_config` | 加载 `~/.zetops/api.conf` |
 | | `api_fetch <路径>` | 从 API 节点获取外部数据 |
@@ -53,7 +54,25 @@ module_execute() {                     # 执行入口（参数为子菜单选项
 }
 ```
 
-## 三、编码规范
+> **菜单行格式**：`module_menu` 每行必须以 `  N. 描述` 开头（如 `" 1. 功能A"`），TUI 鼠标点击依赖该前缀定位选项（`_tui_capture` 解析行首 `N.`）；数字即该选项号，`module_execute` 收到的就是它。
+
+## 三、CLI 与 TUI 双协议兼容
+
+模块菜单项除 TUI 交互外，还可被 CLI 非交互执行：
+
+```bash
+zetops --run <模块序号|短名> <选项号>
+zetops --run 15 2            # 模块15 第2项
+zetops --run ai_assistant 1  # 按短名
+```
+
+执行时环境注入 `ZETOPS_NONINTERACTIVE=1` 且 stdin 接 `/dev/null`，模块需遵循：
+
+- 交互输入一律用 `read_input <变量> <提示> <默认>`（非交互自动取默认值），不要裸用 `read`
+- 危险操作确认用 `confirm_action`（非交互下自动拒绝并提示）
+- `press_enter` 在 stdin 非终端时立即返回，不会卡住
+
+## 四、编码规范
 
 - `#!/bin/bash` + `set -euo pipefail`
 - 文件头注释：作者、功能、版本、日期
@@ -64,7 +83,7 @@ module_execute() {                     # 执行入口（参数为子菜单选项
 - 端口/IP/路径输入必须校验
 - 建议通过 ShellCheck 检查：`shellcheck modules/01_system_init.sh`
 
-## 四、模块独立执行
+## 五、模块独立执行
 
 每个模块尾部已包含独立执行保护，可单独运行：
 
@@ -72,7 +91,7 @@ module_execute() {                     # 执行入口（参数为子菜单选项
 bash modules/01_system_init.sh
 ```
 
-## 五、插件开发
+## 六、插件开发
 
 1. 命名：`plugins/<序号>_<名称>.sh`
 2. 主菜单自动扫描 `plugins/` 目录并动态加载
@@ -86,6 +105,6 @@ plugin_execute() { local c=$1; case $c in ... esac; }   # 执行入口
 
 4. 示例参考：`plugins/example_plugin.sh`
 
-## 六、API 扩展
+## 七、API 扩展
 
 模块如需外部数据（镜像源/NTP/模板），统一通过 `api_fetch <路径>` 获取，不要硬编码地址。参考 `~/.zetops/api.conf` 与 `core/config.sh`。

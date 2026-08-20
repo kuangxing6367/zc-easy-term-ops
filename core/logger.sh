@@ -26,12 +26,14 @@ if command -v tput >/dev/null 2>&1 && tput colors >/dev/null 2>&1; then
     COLOR_GREEN=$(tput setaf 2 2>/dev/null || true)
     COLOR_YELLOW=$(tput setaf 3 2>/dev/null || true)
     COLOR_BLUE=$(tput setaf 4 2>/dev/null || true)
+    COLOR_MAGENTA=$(tput setaf 5 2>/dev/null || true)
+    COLOR_CYAN=$(tput setaf 6 2>/dev/null || true)
     COLOR_GRAY=$(tput setaf 8 2>/dev/null || true)
     COLOR_BOLD=$(tput bold 2>/dev/null || true)
     COLOR_RESET=$(tput sgr0 2>/dev/null || true)
 else
     COLOR_RED=""; COLOR_GREEN=""; COLOR_YELLOW=""; COLOR_BLUE=""
-    COLOR_GRAY=""; COLOR_BOLD=""; COLOR_RESET=""
+    COLOR_MAGENTA=""; COLOR_CYAN=""; COLOR_GRAY=""; COLOR_BOLD=""; COLOR_RESET=""
 fi
 
 # ------------------------------------------------------------

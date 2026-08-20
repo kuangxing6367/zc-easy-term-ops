@@ -26,7 +26,7 @@ DOCKER_REGISTRY="${DOCKER_REGISTRY:-docker.io}"
 
 # ---- 工具箱版本与更新源配置（自我更新模块使用） ----
 # 工具箱整体版本号（升级时由自我更新模块自动更新）
-ZETOPS_VERSION="1.3.4"
+ZETOPS_VERSION="1.4.0"
 # GitHub 仓库地址（自我更新拉取来源）
 ZETOPS_REPO_URL="${ZETOPS_REPO_URL:-https://github.com/kuangxing6367/zc-easy-term-ops.git}"
 # 更新分支
@@ -43,6 +43,8 @@ OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
 OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
 # 单次请求超时（秒）
 OPENAI_TIMEOUT="${OPENAI_TIMEOUT:-120}"
+# 函数调用开关（on=开启，AI 可调用工具获取系统真实状态/执行命令；off=仅纯文本对话）
+OPENAI_TOOLS="${OPENAI_TOOLS:-on}"
 
 # API 节点配置
 API_BASE_URL=""

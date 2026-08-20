@@ -333,35 +333,240 @@ mysql_replication() {
 }
 
 # ------------------------------------------------------------
-# [MySQL] 性能调优（生成优化版 my.cnf）
+# [MySQL] 检测数据库服务名（systemctl → 进程 多回退）
+# 参数：无
+# 输出：服务名（mysqld/mysql/mariadb），未检测到时输出空
+# ------------------------------------------------------------
+mysql_detect_svc() {
+    local s
+    if check_command systemctl; then
+        for s in mysql mysqld mariadb; do
+            if systemctl list-unit-files 2>/dev/null | grep -qE "(^|\.)${s}\.service"; then
+                echo "${s}"; return
+            fi
+        done
+    fi
+    for s in mariadb mysql; do
+        if pgrep -x "${s}" >/dev/null 2>&1 || pgrep -x "${s}d" >/dev/null 2>&1; then
+            echo "${s}"; return
+        fi
+    done
+    echo ""
+}
+
+# ------------------------------------------------------------
+# [MySQL] 检测可用的配置 include 目录（用于写入 drop-in 文件，
+# 避免覆盖主配置 my.cnf 造成配置丢失）
+# 参数：无
+# 输出：目录路径（已存在），无则输出空
+# ------------------------------------------------------------
+mysql_conf_dropin_dir() {
+    local d
+    for d in /etc/mysql/mariadb.conf.d /etc/mysql/conf.d /etc/mysql/mysql.conf.d /etc/my.cnf.d; do
+        if [[ -d "${d}" ]]; then
+            echo "${d}"; return
+        fi
+    done
+    echo ""
+}
+
+# ------------------------------------------------------------
+# [MySQL] 探测数据库版本号（判断是否支持 query_cache_type）
+# 参数：无
+# 输出：版本号（如 8.0.36 / 10.11.6），未知时输出空
+# ------------------------------------------------------------
+mysql_version() {
+    local v=""
+    if check_command mysql; then
+        v=$(mysql --version 2>/dev/null | sed -n 's/.*Distrib \([0-9.]*\).*/\1/p')
+        [[ -n "${v}" ]] && { echo "${v}"; return; }
+        v=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    elif check_command mariadb; then
+        v=$(mariadb --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    fi
+    [[ -n "${v}" ]] && echo "${v}"
+}
+
+# ------------------------------------------------------------
+# [MySQL] 性能调优（drop-in 配置 + 兼容性检测 + 校验 + 回滚 + 重启验证）
 # 参数：无
 # 返回：无
+# 说明：修复历史问题——不再覆盖主 my.cnf；MySQL 8.0+ 移除
+#       query_cache_type 不再写入；O_DIRECT 按数据目录文件系统判断；
+#       配置先校验后落盘，重启失败自动回滚并再次尝试。
 # ------------------------------------------------------------
 mysql_tune() {
     check_root || return 1
-    check_command mysql || { log_error "mysql 客户端未安装"; return 1; }
+    check_command mysql || check_command mariadb || { log_error "MySQL/MariaDB 客户端未安装"; return 1; }
+
     log_info "当前关键参数（调优前）:"
-    mysql -uroot -e "SHOW VARIABLES LIKE 'innodb_buffer_pool_size'; SHOW VARIABLES LIKE 'max_connections';" 2>/dev/null \
-        || log_warning "无法查询当前参数（服务未启动或需要密码）"
-    local mem
-    read_input mem "服务器物理内存(GB):" "4"
-    [[ "${mem}" =~ ^[0-9]+$ ]] || { log_error "无效数字"; return 1; }
+    local q
+    for q in "SHOW VARIABLES LIKE 'version';" "SHOW VARIABLES LIKE 'innodb_buffer_pool_size';" "SHOW VARIABLES LIKE 'max_connections';"; do
+        if mysql -uroot -e "${q}" 2>/dev/null || mariadb -uroot -e "${q}" 2>/dev/null; then
+            break
+        fi
+    done
+    log_warning "（若上面无输出，说明服务未启动或需要密码；调优前请确保数据库已正常运行）"
+
+    # ---- 物理内存检测 + 输入校验 ----
+    local mem_total
+    mem_total=$(free -m 2>/dev/null | awk '/Mem:/{print $2}' || echo 0)
+    local mem=""
+    read_input mem "服务器物理内存(GB) [留空按检测到 ${mem_total}MB 自动计算]:" ""
+    if [[ -z "${mem}" ]]; then
+        mem=$((mem_total / 1024))
+        (( mem < 1 )) && mem=1
+    fi
+    [[ "${mem}" =~ ^[0-9]+$ ]] || { log_error "无效数字: ${mem}"; return 1; }
+    (( mem >= 1 && mem <= 4096 )) || { log_error "内存值不合法（1-4096）"; return 1; }
+
+    # ---- innodb_buffer_pool：默认内存一半，钳制到实际内存 70% 且 ≥128M ----
     local innodb_buf=$((mem * 1024 / 2))
-    local mycnf="/etc/my.cnf"
-    [[ -f /etc/mysql/my.cnf ]] && mycnf="/etc/mysql/my.cnf"
-    cp "${mycnf}" "${mycnf}.bak.$(date +%s)" 2>/dev/null || true
-    cat > /etc/my.cnf.d/zetops-tune.cnf 2>/dev/null || cat > "${mycnf}" <<EOF
-# 由 ZETOPS 生成 - 性能调优(Performance Tuning)
-[mysqld]
-innodb_buffer_pool_size = ${innodb_buf}M
-innodb_log_file_size = 256M
-innodb_flush_log_at_trx_commit = 2
-innodb_flush_method = O_DIRECT
-max_connections = 500
-query_cache_type = 0
-skip-name-resolve
-EOF
-    systemctl restart mysql 2>/dev/null || systemctl restart mysqld 2>/dev/null || true
+    local cap=$((mem_total * 70 / 100))
+    if (( cap >= 1 && innodb_buf > cap )); then
+        innodb_buf="${cap}"
+        log_warning "innodb_buffer_pool 已钳制为实际内存 70%: ${innodb_buf}M"
+    fi
+    (( innodb_buf < 128 )) && innodb_buf=128
+
+    # ---- 版本探测：MySQL 8.0+ 已移除 query_cache，写入会导致启动失败 ----
+    local ver=""
+    ver=$(mysql_version)
+    local support_qc=0
+    if [[ -n "${ver}" ]]; then
+        if [[ "${ver}" == 8* || "${ver}" == 9* ]]; then
+            log_info "检测到 MySQL ${ver}（query_cache 已移除，不再写入 query_cache_type）"
+        else
+            support_qc=1
+            log_info "检测到数据库版本 ${ver}（支持 query_cache_type）"
+        fi
+    else
+        log_warning "无法检测数据库版本，跳过 query_cache_type（保证 MySQL 8 兼容）"
+    fi
+
+    # ---- 目标位置：优先 drop-in 目录；无则尝试创建，绝不覆盖主配置 ----
+    local dropin=""
+    dropin=$(mysql_conf_dropin_dir)
+    local target=""
+    if [[ -n "${dropin}" ]]; then
+        target="${dropin}/99-zetops-tune.cnf"
+    else
+        # 标准发行版主配置均含 !includedir 引用这些目录，创建后即可生效
+        for d in /etc/mysql/mariadb.conf.d /etc/mysql/conf.d /etc/mysql/mysql.conf.d /etc/my.cnf.d; do
+            if mkdir -p "${d}" 2>/dev/null; then
+                dropin="${d}"
+                target="${d}/99-zetops-tune.cnf"
+                log_warning "已创建 drop-in 目录 ${d}（若主配置未引用它，需手动添加 !includedir）"
+                break
+            fi
+        done
+        if [[ -z "${dropin}" ]]; then
+            log_error "未找到且无法创建配置 include 目录，已取消调优（绝不覆盖主配置）"
+            return 1
+        fi
+    fi
+    local ts bak=""
+    ts=$(date +%Y%m%d%H%M%S)
+    if [[ -f "${target}" ]]; then
+        bak="${target}.bak.${ts}"
+        cp -a "${target}" "${bak}" 2>/dev/null || true
+        log_info "已备份原配置: ${bak}"
+    fi
+
+    # ---- 组装配置（暂存到临时文件，校验通过后再落盘） ----
+    local newfile="${target}.new.${ts}"
+    {
+        echo "# ZETOPS 自动生成 - 性能调优 (${ts})，请勿手动编辑"
+        echo "[mysqld]"
+        echo "innodb_buffer_pool_size = ${innodb_buf}M"
+        echo "innodb_log_file_size = 256M"
+        echo "innodb_flush_log_at_trx_commit = 2"
+        echo "max_connections = 500"
+        echo "skip-name-resolve"
+        if (( support_qc )); then
+            echo "query_cache_type = 0"
+        fi
+    } > "${newfile}"
+
+    # O_DIRECT 仅适用于数据目录位于本地块设备（overlayfs/tmpfs 不支持）
+    local datadir_fs=""
+    datadir_fs=$(stat -f -c '%T' "${MYSQL_DATA_DIR:-/var/lib/mysql}" 2>/dev/null || echo "")
+    if [[ "${datadir_fs}" != "overlay" && "${datadir_fs}" != "tmpfs" && -n "${datadir_fs}" ]]; then
+        echo "innodb_flush_method = O_DIRECT" >> "${newfile}"
+    else
+        log_warning "数据目录文件系统(${datadir_fs:-未知})不支持 O_DIRECT，已省略该参数"
+    fi
+
+    # ---- 配置校验（mysqld/mariadbd --validate-config） ----
+    local validator=""
+    for validator in mysqld mariadbd; do
+        check_command "${validator}" && break
+        validator=""
+    done
+    if [[ -n "${validator}" ]]; then
+        if "${validator}" --defaults-extra-file="${newfile}" --validate-config >/dev/null 2>&1; then
+            log_success "配置校验通过 (${validator})"
+        else
+            log_error "配置校验失败，已取消调优（不影响现有配置）"
+            rm -f "${newfile}"
+            return 1
+        fi
+    else
+        log_warning "未找到 mysqld/mariadbd，跳过配置校验"
+    fi
+
+    # ---- 原子落盘 ----
+    if mv "${newfile}" "${target}" 2>/dev/null; then
+        log_success "已写入调优配置: ${target}"
+    else
+        log_error "无法写入 ${target}，请检查目录权限"
+        rm -f "${newfile}"
+        return 1
+    fi
+
+    # ---- 重启（需确认；失败自动回滚） ----
+    local svc=""
+    svc=$(mysql_detect_svc)
+    if [[ -n "${svc}" ]]; then
+        log_warning "即将重启 ${svc} 使配置生效（数据库将短暂不可用）"
+        local ans=""
+        read -r -p "确认重启 ${svc}? [y/N]: " ans || ans="n"
+        if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
+            if systemctl restart "${svc}" 2>/dev/null || service "${svc}" restart 2>/dev/null; then
+                log_success "${svc} 已重启"
+            else
+                log_error "${svc} 重启失败，正在回滚配置并恢复服务"
+                if [[ -n "${bak}" && -f "${bak}" ]]; then
+                    cp -a "${bak}" "${target}" 2>/dev/null || true
+                    log_warning "已回滚配置: ${target}"
+                else
+                    rm -f "${target}" 2>/dev/null || true
+                    log_warning "已移除调优配置: ${target}"
+                fi
+                systemctl restart "${svc}" 2>/dev/null || service "${svc}" restart 2>/dev/null || true
+            fi
+
+            # 重启后验证服务状态
+            sleep 2
+            local active=""
+            if check_command systemctl; then
+                active=$(systemctl is-active "${svc}" 2>/dev/null || echo "")
+            fi
+            if [[ "${active}" != "active" ]] && ( pgrep -x mysqld >/dev/null 2>&1 || pgrep -x mariadbd >/dev/null 2>&1 ); then
+                active="active"
+            fi
+            if [[ "${active}" == "active" ]]; then
+                log_success "数据库服务运行正常（调优已生效）"
+            else
+                log_error "数据库服务未运行，请检查 ${target} 与日志（/var/log/mysql/error.log）"
+            fi
+        else
+            log_info "已跳过重启，配置将在下次手动重启后生效"
+        fi
+    else
+        log_warning "未检测到数据库服务名，请手动重启数据库使配置生效"
+    fi
+
     log_success "MySQL 参数已调优（innodb_buffer_pool=${innodb_buf}M）"
 }
 

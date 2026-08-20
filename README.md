@@ -24,7 +24,7 @@ An interactive, modular Linux operations toolbox (ZETOPS). Provides multi-level 
 | 10 开发部署 | pyenv/nvm/OpenJDK/Go/Rust、Git、Jenkins/SonarQube、Webhook、应用一键部署 |
 | 11 密码权限 | MySQL/PostgreSQL/Redis 密码重置、Linux 密码、sudo 恢复、SSH 密钥生成分发、密码策略检查 |
 | 12 自我更新 | 查看版本、检查更新、从 GitHub 拉取升级（支持国内加速镜像）、更新日志 |
-| 13 AI 智能助手 | 双引擎：配置 OpenAI Key 后直达大模型对话（纯 Bash curl 流式输出，兼容 OpenAI 官方/中转/DeepSeek/Qwen）；未配置回退纯内置规则引擎零依赖，502/磁盘/CPU/内存/网络/Docker/MySQL/端口 9大场景，交互式修复+验证，多回退策略 |
+| 13 AI 智能助手 | 双引擎：配置 OpenAI Key 后直达大模型对话（纯 Bash curl，兼容 OpenAI 官方/中转/DeepSeek/Qwen），支持「函数调用」——AI 可调用工具读取服务器真实状态（系统/磁盘/服务/端口/日志/Docker/MySQL）并申请执行命令（高危拒绝、写操作二次确认）；未配置回退纯内置规则引擎零依赖，11 大场景+一键全面体检，交互式修复+验证，多回退策略 |
 | 14 安全基线加固 | CIS 风格基线扫描（空密码/UID=0/权限/SUID/防火墙/SSH/密码策略），逐项确认一键加固 |
 | 15 硬件信息查看 | CPU/内存/磁盘(含smartctl健康度)/网卡/PCI/系统信息一键汇总，纯命令零依赖 |
 | 16 操作审计日志 | 时间\|用户\|模块\|操作\|结果 审计记录（只追加），按用户/模块筛选、统计概览，全局 audit_log() 可被任何模块调用 |
@@ -47,12 +47,37 @@ An interactive, modular Linux operations toolbox (ZETOPS). Provides multi-level 
 # 一键安装（检测环境/安装依赖/创建软链接/初始化配置）
 sudo bash install.sh
 
-# 启动工具箱
+# 启动工具箱（默认 CLI，显示帮助与模块列表）
 zetops
 
 # 或直接在仓库目录运行
 ./zetops
+
+# 进入交互式 TUI（蓝色主题，支持鼠标点击）
+zetops --tui
+
+# 非交互执行模块菜单项（适合脚本/定时任务）
+zetops --run 15 2            # 模块15（硬件信息）第2项：CPU 信息
+zetops --run ai_assistant 1  # 按模块短名执行
+
+# 命令行备份文件（生成 .bak.<时间戳> 副本）
+zetops --backup /etc/nginx/nginx.conf
+
+# 其他
+zetops --list        # 列出全部模块与插件
+zetops --version     # 版本号
+zetops --help        # 帮助
 ```
+
+> 默认 CLI 协议：无参数显示帮助与模块列表；`--tui` 进入交互界面（键盘输入或鼠标点击均可）。
+
+## 自动化测试 | Tests
+
+```bash
+bash tests/run_tests.sh
+```
+
+覆盖：全部脚本语法检查、模块/插件接口完整性、颜色变量、版本一致性、conf 模板解析、AI 工具调用解析/意图识别/命令安全层、菜单渲染与鼠标映射、CLI 协议、备份单元测试。
 
 ## 环境要求 | Requirements
 
@@ -69,6 +94,7 @@ zc-easy-term-ops/
 ├── core/              # 核心框架（main/menu/logger/utils/config）
 ├── modules/           # 26 个功能模块（统一接口，可单独执行）
 ├── plugins/           # 插件目录（自动扫描动态加载）
+├── tests/             # 自动化测试套件（run_tests.sh）
 ├── config/            # 配置模板（zetops.conf / api.conf）
 └── docs/              # 文档（INSTALL/MODULES/CHANGELOG）
 ```
