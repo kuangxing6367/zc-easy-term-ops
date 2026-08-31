@@ -423,7 +423,7 @@ _ui_banner() {
 EOF
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.4.0} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.4.1} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 

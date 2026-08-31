@@ -13,7 +13,7 @@ set -euo pipefail
 
 module_name="软件包与仓库管理"
 module_short="package"
-module_version="1.1.0"
+module_version="1.1.1"
 
 module_description() {
     echo "软件源查看与镜像切换(清华/阿里/中科大)、常用工具安装、批量安装卸载、第三方源"

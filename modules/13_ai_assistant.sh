@@ -21,7 +21,7 @@ set -euo pipefail
 
 module_name="AI 智能运维助手"
 module_short="ai_assistant"
-module_version="1.2.0"
+module_version="1.2.1"
 
 # ---- 多轮上下文（全局） ----
 AI_CTX_INTENT=""       # 上次意图

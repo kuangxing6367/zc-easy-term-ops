@@ -73,7 +73,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.4.0"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.4.1"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -126,12 +126,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.4.0)"
+echo "[4] 版本一致性 (1.4.1)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.4.0" "${VER_CFG}"
-check_eq "conf.example 版本" "1.4.0" "${VER_EXAMPLE}"
-grep -q "## \[1.4.0\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.4.0]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.4.0]"; }
+check_eq "config.sh 版本" "1.4.1" "${VER_CFG}"
+check_eq "conf.example 版本" "1.4.1" "${VER_EXAMPLE}"
+grep -q "## \[1.4.1\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.4.1]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.4.1]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
