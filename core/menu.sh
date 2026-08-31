@@ -343,7 +343,7 @@ _tui_read_event() {
                 fi
                 echo "none"
                 return 1
-            # SGR 鼠标：ESC [ < b ; x ; y M|m
+            # SGR 鼠标：ESC [ < b ; x ; y M|m （M=按下，m=释放）
             elif [[ "${m}" == "<" ]]; then
                 local seq="" c="" btn="" x="" y=""
                 while (( ${#seq} < 32 )); do
@@ -356,10 +356,17 @@ _tui_read_event() {
                     seq+="${c}"
                     [[ "${c}" == "M" || "${c}" == "m" ]] && break
                 done
-                local body="${seq%[Mm]}"
+                # 关键：区分按下(M)与释放(m)。二者按钮号相同(0)，
+                # 若不区分，一次点击的"按下+释放"会被误判成两次点击 → 点一次就进入
+                local body="${seq%[Mm]}" term="${seq: -1}"
                 IFS=';' read -r btn x y <<< "${body}"
                 if [[ "${btn}" =~ ^[0-9]+$ ]] && [[ "${x}" =~ ^[0-9]+$ ]] && [[ "${y}" =~ ^[0-9]+$ ]]; then
-                    printf 'mouse:%d,%d,%d' "${btn}" "${x}" "${y}"
+                    if [[ "${term}" == "M" ]]; then
+                        printf 'mouse:%d,%d,%d' "${btn}" "${x}" "${y}"
+                    else
+                        # 释放事件：按钮号置 3（与 X10 释放一致），调用方按 btn==0 判断时自动忽略
+                        printf 'mouse:%d,%d,%d' "$(( btn + 3 ))" "${x}" "${y}"
+                    fi
                     return 0
                 fi
                 echo "none"
@@ -506,7 +513,7 @@ _ui_banner() {
 EOF
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.0} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.1} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 

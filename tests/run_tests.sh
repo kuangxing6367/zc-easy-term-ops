@@ -73,7 +73,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.0"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.1"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -126,12 +126,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.5.0)"
+echo "[4] 版本一致性 (1.5.1)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.5.0" "${VER_CFG}"
-check_eq "conf.example 版本" "1.5.0" "${VER_EXAMPLE}"
-grep -q "## \[1.5.0\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.0]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.0]"; }
+check_eq "config.sh 版本" "1.5.1" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.1" "${VER_EXAMPLE}"
+grep -q "## \[1.5.1\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.1]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.1]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -252,8 +252,10 @@ check_eq "键盘输入 q" "q" "$(echo 'q' | get_user_choice 26 2>/dev/null)"
 check_eq "非法输入回退" "5" "$(printf 'abc\n5\n' | get_user_choice 26 2>/dev/null)"
 
 # [10b] 鼠标两段式点击（点击=选中，再点/回车=确认；mock 事件源，测完恢复真实函数）
+# 关键：真实终端一次点击 = SGR 按下(M)+释放(m) 两个事件，释放按钮号被置 3（btn=3）
+#       get_user_choice 只认 btn==0，故一次点击仅选中不进入——否则会退化成"点一次就进"
 echo ""
-echo "[10b] 鼠标两段式点击"
+echo "[10b] 鼠标两段式点击（含 SGR 按下/释放对）"
 EV_FILE_T="$(mktemp)"
 _TUI_OPT_ROW_OPT[10]="5"
 _tui_read_event_real="$(declare -f _tui_read_event)"
@@ -271,14 +273,29 @@ _tui_read_event() {
 _tui_mouse_on(){ return 0; }
 _tui_mouse_off(){ return 0; }
 _tui_redraw_menu(){ :; }
-printf 'mouse:0,1,10\nmouse:0,1,10\n' > "${EV_FILE_T}"
-check_eq "点击选中再点同项确认" "5" "$(get_user_choice 26 2>/dev/null)"
-printf 'mouse:0,1,10\nline:\n' > "${EV_FILE_T}"
-check_eq "点击选中后回车确认" "5" "$(get_user_choice 26 2>/dev/null)"
+# 一次点击（按下+释放）+ 二次点击（按下+释放）→ 二次确认
+printf 'mouse:0,1,10\nmouse:3,1,10\nmouse:0,1,10\nmouse:3,1,10\n' > "${EV_FILE_T}"
+check_eq "一次点击仅选中，二次点击确认" "5" "$(get_user_choice 26 2>/dev/null)"
+# 一次点击（按下+释放）+ 回车 → 确认选中
+printf 'mouse:0,1,10\nmouse:3,1,10\nline:\n' > "${EV_FILE_T}"
+check_eq "一次点击后回车确认" "5" "$(get_user_choice 26 2>/dev/null)"
+# 仅一次点击（按下+释放），无后续 → 事件耗尽走 q，验证"一次点击不会进入"
+printf 'mouse:0,1,10\nmouse:3,1,10\n' > "${EV_FILE_T}"
+check_eq "仅一次点击不进入(返回q)" "q" "$(get_user_choice 26 2>/dev/null)"
 printf 'line:7\n' > "${EV_FILE_T}"
 check_eq "键盘数字直接进入" "7" "$(get_user_choice 26 2>/dev/null)"
 eval "${_tui_read_event_real}"
 rm -f "${EV_FILE_T}" "${EV_FILE_T}.tmp"
+
+echo ""
+echo "[10c] _tui_read_event SGR 按下/释放解析"
+r=$(printf '\033[<0;10;5M' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "SGR 按下(M) 解析" "mouse:0,10,5" "${r}"
+r=$(printf '\033[<0;10;5m' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "SGR 释放(m) 按钮号+3" "mouse:3,10,5" "${r}"
+r=$(printf '\033[M\x20\x21\x22' | { _tui_read_event stdin 2>/dev/null; })
+# X10：ESC[M 后三个字节各 +32；\x20->btn0 \x21->x1 \x22->y2
+check_eq "X10 按下解析" "mouse:0,1,2" "${r}"
 
 echo ""
 echo "[11] CLI 协议"
