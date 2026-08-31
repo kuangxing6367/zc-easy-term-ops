@@ -83,7 +83,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.7"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.8"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -136,12 +136,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.5.7)"
+echo "[4] 版本一致性 (1.5.8)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.5.7" "${VER_CFG}"
-check_eq "conf.example 版本" "1.5.7" "${VER_EXAMPLE}"
-grep -q "## \[1.5.7\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.7]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.7]"; }
+check_eq "config.sh 版本" "1.5.8" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.8" "${VER_EXAMPLE}"
+grep -q "## \[1.5.8\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.8]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.8]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -304,6 +304,28 @@ printf 'mouse:65,1,10\n' > "${EV_FILE_T}"
 check_eq "滚轮下翻返回PGDN" "PGDN" "$(get_user_choice 26 2>/dev/null)"
 printf 'mouse:64,1,10\n' > "${EV_FILE_T}"
 check_eq "滚轮上翻返回PGUP" "PGUP" "$(get_user_choice 26 2>/dev/null)"
+# 方向键导航：多选项映射（主菜单当前页/子菜单统一）
+_TUI_OPT_ROW_OPT=()
+_TUI_OPT_ROW_OPT[7]=1
+_TUI_OPT_ROW_OPT[8]=2
+_TUI_OPT_ROW_OPT[9]=3
+printf 'key:down\nline:\n' > "${EV_FILE_T}"
+check_eq "方向键↓选中首项+回车" "1" "$(get_user_choice 26 2>/dev/null)"
+printf 'key:down\nkey:down\nline:\n' > "${EV_FILE_T}"
+check_eq "方向键↓↓选中第二项" "2" "$(get_user_choice 26 2>/dev/null)"
+printf 'key:down\nkey:down\nkey:down\nkey:down\nline:\n' > "${EV_FILE_T}"
+check_eq "方向键↓到底停在末项" "3" "$(get_user_choice 26 2>/dev/null)"
+printf 'key:up\nline:\n' > "${EV_FILE_T}"
+check_eq "方向键↑无选中先到首项" "1" "$(get_user_choice 26 2>/dev/null)"
+printf 'key:down\nkey:down\nkey:up\nline:\n' > "${EV_FILE_T}"
+check_eq "方向键下移再上移回首项" "1" "$(get_user_choice 26 2>/dev/null)"
+printf 'key:right\nline:\n' > "${EV_FILE_T}"
+check_eq "方向键→同下移" "1" "$(get_user_choice 26 2>/dev/null)"
+printf 'key:left\nline:\n' > "${EV_FILE_T}"
+check_eq "方向键←同上移" "1" "$(get_user_choice 26 2>/dev/null)"
+# 方向键选中后鼠标点击同项确认（混合导航）
+printf 'key:down\nmouse:0,1,7\nmouse:3,1,7\n' > "${EV_FILE_T}"
+check_eq "方向键选中后点击同项确认" "1" "$(get_user_choice 26 2>/dev/null)"
 eval "${_tui_read_event_real}"
 rm -f "${EV_FILE_T}" "${EV_FILE_T}.tmp"
 
@@ -328,6 +350,15 @@ check_eq "SGR 滚轮下保留" "mouse:65,10,5" "${r}"
 # 控制字符（序列残留/功能键）不回显，不进入普通输入
 r=$(printf '\x01' | { _tui_read_event stdin 2>/dev/null; })
 check_eq "控制字符丢弃" "none" "${r}"
+# 方向键（CSI A/B/C/D）解析为统一导航事件
+r=$(printf '\033[A' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "方向键↑解析" "key:up" "${r}"
+r=$(printf '\033[B' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "方向键↓解析" "key:down" "${r}"
+r=$(printf '\033[C' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "方向键→解析" "key:right" "${r}"
+r=$(printf '\033[D' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "方向键←解析" "key:left" "${r}"
 
 echo ""
 echo "[11] CLI 协议"

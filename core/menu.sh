@@ -370,6 +370,13 @@ _tui_read_event() {
             else
                 IFS= read -r -s -n 1 -t 1 m || m=""
             fi
+            # 方向键：ESC [ A/B/C/D → key:up/down/left/right（全菜单统一导航）
+            case "${m}" in
+                A) echo "key:up"; return 0 ;;
+                B) echo "key:down"; return 0 ;;
+                C) echo "key:right"; return 0 ;;
+                D) echo "key:left"; return 0 ;;
+            esac
             # X10 鼠标：ESC [ M <b><x><y>（b/x/y 各为 值+32 的单字节）
             if [[ "${m}" == "M" ]]; then
                 local b1="" b2="" b3="" btn="" x="" y=""
@@ -505,7 +512,7 @@ get_user_choice() {
     # 注意：本函数通过命令替换调用（choice=$(get_user_choice ...)），
     # 因此提示/告警必须输出到 stderr，stdout 只返回最终选择数字
     _TUI_SELECTED=""
-    prompt="  ${COLOR_BOLD}${COLOR_GREEN}请输入操作编号 (0-${max}) [q=退出${COLOR_RESET}${COLOR_GRAY}，鼠标：点击选中，再次点击确认${COLOR_RESET}${COLOR_BOLD}${COLOR_GREEN}]: ${COLOR_RESET}"
+    prompt="  ${COLOR_BOLD}${COLOR_GREEN}请输入操作编号 (0-${max}) [q=退出${COLOR_RESET}${COLOR_GRAY}，方向键/鼠标选中，回车或再点确认${COLOR_RESET}${COLOR_BOLD}${COLOR_GREEN}]: ${COLOR_RESET}"
     # 提示只打印一次：空闲等待（超时）时不重复刷新，避免"自动刷新"现象
     echo -n "${prompt}" >&2
     while true; do
@@ -536,6 +543,46 @@ get_user_choice() {
                 fi
                 echo "${COLOR_YELLOW}  ⚠ 输入无效，请输入 0-${max} 的数字${COLOR_RESET}" >&2
                 echo -n "${prompt}" >&2
+                ;;
+            key:up|key:down|key:left|key:right)
+                # 方向键导航：在当前渲染的选项集合中上下移动选中项
+                # （主菜单当前页 / 子菜单全部选项；复用 _TUI_OPT_ROW_OPT 行映射）
+                local -a _ol=()
+                local _k _v
+                for _k in "${!_TUI_OPT_ROW_OPT[@]}"; do
+                    _v="${_TUI_OPT_ROW_OPT[$_k]}"
+                    [[ -n "${_v}" ]] && _ol+=("${_v}")
+                done
+                # 关联数组键无序 → 选项号去重并按数字升序，保证导航顺序
+                if (( ${#_ol[@]} > 1 )); then
+                    _ol=($(printf '%s\n' "${_ol[@]}" | sort -nu 2>/dev/null))
+                fi
+                local _cur=0 _target=0 _i=0 _found=0
+                if [[ -n "${sel}" ]]; then
+                    for _i in "${!_ol[@]}"; do
+                        if [[ "${_ol[$_i]}" == "${sel}" ]]; then
+                            _cur="${_i}"; _found=1; break
+                        fi
+                    done
+                else
+                    # 尚无选中：默认光标在第一个可选项
+                    _cur=-1; _found=1
+                fi
+                if [[ "${ev}" == "key:up" || "${ev}" == "key:left" ]]; then
+                    _target=$(( _cur - 1 ))
+                else
+                    _target=$(( _cur + 1 ))
+                fi
+                (( _target < 0 )) && _target=0
+                if (( _target >= ${#_ol[@]} )); then
+                    _target=$(( ${#_ol[@]} - 1 ))
+                fi
+                if (( ${#_ol[@]} > 0 )); then
+                    sel="${_ol[$_target]}"
+                    _TUI_SELECTED="${sel}"
+                    _tui_redraw_menu
+                    echo -n "${prompt}" >&2
+                fi
                 ;;
             mouse:*)
                 IFS=',' read -r btn x y <<< "${ev#mouse:}"
@@ -604,7 +651,7 @@ EOF
     fi
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.7} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.8} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 
@@ -613,7 +660,7 @@ EOF
 # 参数：无
 # ------------------------------------------------------------
 _ui_banner_compact() {
-    _tui_line "  ${COLOR_BOLD}${COLOR_BLUE}ZETOPS${COLOR_RESET} ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维工具箱${COLOR_RESET}  ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.7} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_BLUE}ZETOPS${COLOR_RESET} ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维工具箱${COLOR_RESET}  ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.8} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 
@@ -745,7 +792,7 @@ show_main_menu_render() {
     local _fm_pages=$(( (_fm_total + _TUI_PAGE_SIZE - 1) / _TUI_PAGE_SIZE ))
     (( _fm_pages < 1 )) && _fm_pages=1
     _tui_line "  ${COLOR_GRAY}第 $(( ${_TUI_PAGE:-0} + 1 ))/${_fm_pages} 页    （滚轮 或 PageUp/PageDown 翻页）${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}q${COLOR_RESET}. 退出    ${COLOR_GRAY}点击菜单项 = 选中（高亮），再次点击同一项 = 确认进入；数字回车 = 直接进入${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}q${COLOR_RESET}. 退出    ${COLOR_GRAY}↑↓方向键/点击 = 选中（高亮），回车或再点同一项 = 确认进入；数字回车 = 直接进入${COLOR_RESET}"
     _tui_nl
     _TUI_BUF_ON=0
     _tui_flush_render
@@ -774,7 +821,7 @@ show_sub_menu_render() {
     _TUI_BUF_ON=1; _TUI_RENDER_BUF=""
     _tui_line "${COLOR_BOLD}${COLOR_CYAN}"
     _tui_line "  ┌────────────────────────────────────────────────────┐"
-    _tui_line "  │  ${module_name}  ▸  输入 0 返回主菜单（鼠标点击选中，再点确认）"
+    _tui_line "  │  ${module_name}  ▸  输入 0 返回主菜单（方向键/鼠标选中，回车或再点确认）"
     _tui_line "  └────────────────────────────────────────────────────┘"
     _tui_line "${COLOR_RESET}"
     _tui_run module_description
@@ -826,7 +873,7 @@ show_plugin_menu_render() {
     _TUI_BUF_ON=1; _TUI_RENDER_BUF=""
     _tui_line "${COLOR_BOLD}${COLOR_CYAN}"
     _tui_line "  ┌────────────────────────────────────────────────────┐"
-    _tui_line "  │  [插件] ${name}  ▸  输入 0 返回主菜单（鼠标点击选中，再点确认）"
+    _tui_line "  │  [插件] ${name}  ▸  输入 0 返回主菜单（方向键/鼠标选中，回车或再点确认）"
     _tui_line "  └────────────────────────────────────────────────────┘"
     _tui_line "${COLOR_RESET}"
     _tui_capture plugin_menu

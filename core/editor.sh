@@ -414,7 +414,7 @@ ed_render() {
     [[ "${ED_MOD}" == "1" ]] && modmark="● 已修改"
     [[ "${ED_READONLY}" == "1" ]] && romark=" [只读]"
     printf -v line '\e[H\e[30;47m %s v%s   %s  %s%s\e[0m\e[K\n' \
-        "ZETOPS 编辑器" "${ZETOPS_VERSION:-1.5.7}" "${ED_FILE:-<new>}" "${modmark}" "${romark}"
+        "ZETOPS 编辑器" "${ZETOPS_VERSION:-1.5.8}" "${ED_FILE:-<new>}" "${modmark}" "${romark}"
     buf+="${line}"
     # 编辑区（帮助页或文件内容）
     if (( ED_HELP == 1 )); then
