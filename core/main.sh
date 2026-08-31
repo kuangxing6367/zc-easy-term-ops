@@ -41,8 +41,8 @@ cleanup() {
     echo ""
     log_warning "正在退出 ZETOPS ..."
     stop_spinner 2>/dev/null || true
-    # 关闭 TUI 鼠标捕获（若已开启）
-    printf '\e[?1000l\e[?1002l' > /dev/tty 2>/dev/null || true
+    # 关闭 TUI 鼠标捕获（若已开启；X10 + SGR 双模式）
+    printf '\e[?1000l\e[?1002l\e[?1006l' > /dev/tty 2>/dev/null || true
     if [[ -n "${_LOCK_FD:-}" ]]; then
         flock -u "${_LOCK_FD}" 2>/dev/null || true
     fi

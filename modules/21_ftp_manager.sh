@@ -134,16 +134,21 @@ ftp_install() {
     if ! confirm_action "安装 vsftpd（使用系统包管理器）?"; then
         return
     fi
+    local rc=0
     case "$(detect_pkg_manager)" in
-        apt)    sudo apt-get update -qq && sudo apt-get install -y vsftpd ;;
-        yum)    sudo yum install -y vsftpd ;;
-        dnf)    sudo dnf install -y vsftpd ;;
-        zypper) sudo zypper install -y vsftpd ;;
+        apt)    sudo apt-get update -qq && sudo apt-get install -y vsftpd; rc=$? ;;
+        yum)    sudo yum install -y vsftpd; rc=$? ;;
+        dnf)    sudo dnf install -y vsftpd; rc=$? ;;
+        zypper) sudo zypper install -y vsftpd; rc=$? ;;
         *)
             log_error "不支持的包管理器: $(detect_pkg_manager)"
-            return
+            return 1
             ;;
     esac
+    if [[ "${rc}" -ne 0 ]]; then
+        log_error "vsftpd 安装失败，请检查软件源配置"
+        return 1
+    fi
     # 启动并设置开机自启（debian 系默认不启动）
     sudo systemctl enable --now vsftpd 2>/dev/null || sudo service vsftpd start 2>/dev/null || true
     log_success "vsftpd 安装完成并已启动"

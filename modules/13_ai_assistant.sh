@@ -1593,7 +1593,9 @@ ai_llm_parse_tool_calls() {
     local raw head tmp
     raw=$(tr -d '\n' < "${resp}")
     AI_TOOL_ID=""; AI_TOOL_NAME=""; AI_TOOL_ARGS_RAW=""; AI_TOOL_ARGS=""
-    [[ "${raw}" != *'"tool_calls"'* ]] && return 1
+    # 仅当存在真正的 tool_calls 数组（"tool_calls":[...]）时才解析；
+    # 最终文本回复中的 "tool_calls":null 不应误判为工具调用
+    [[ "${raw}" != *'"tool_calls":['* ]] && return 1
 
     # 从 "tool_calls":[ 之后开始（避免误取顶层 id），
     # sed 贪婪匹配取最后一个工具调用（id/name/arguments 均来自同一调用）
@@ -1867,8 +1869,8 @@ ai_llm_chat_once() {
             return 1
         fi
 
-        # 工具调用循环（最多 4 轮）
-        while (( rounds < 4 )) && grep -q '"tool_calls"' "${resp_file}"; do
+        # 工具调用循环（最多 4 轮）；仅响应中确有 tool_calls 数组时才继续
+        while (( rounds < 4 )) && grep -q '"tool_calls":\[' "${resp_file}"; do
             echo "  ${COLOR_GREEN}🔧 AI 正在调用工具...${COLOR_RESET}"
             if ! ai_llm_parse_tool_calls "${resp_file}"; then
                 echo "  ${COLOR_YELLOW}⚠️  工具调用解析失败，已忽略${COLOR_RESET}"
@@ -1898,9 +1900,21 @@ ai_llm_chat_once() {
             fi
         done
 
-        # 输出最终文本
+        # 输出最终文本：若模型仍在调用工具（4轮用尽）或未给出文本，
+        # 补发一次纯文本请求（去掉 tools，强制模型直接总结回答）
         printf "  ${COLOR_BOLD}${COLOR_BLUE}AI>${COLOR_RESET} "
-        if reply=$(ai_llm_extract_content "${resp_file}"); then
+        if ! reply=$(ai_llm_extract_content "${resp_file}") || grep -q '"tool_calls":\[' "${resp_file}"; then
+            rm -f "${resp_file}"
+            resp_file=$(mktemp)
+            payload="{\"model\":\"${OPENAI_MODEL}\",\"stream\":false,\"messages\":[$(ai_llm_build_messages "${user}" "${extra}")]}"
+            curl -sS --max-time "${OPENAI_TIMEOUT:-120}" \
+                -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "${payload}" \
+                -o "${resp_file}" "${OPENAI_BASE_URL%/}/chat/completions" 2>/dev/null
+            reply=$(ai_llm_extract_content "${resp_file}" || true)
+        fi
+        if [[ -n "${reply}" ]]; then
             printf "%s" "${reply}"
             echo ""
         else

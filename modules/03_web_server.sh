@@ -452,10 +452,16 @@ apache_install() {
 apache_remove() {
     check_root || return 1
     confirm_action "卸载 Apache" || return 1
+    local rc=0
     case "$(detect_pkg_manager)" in
-        apt)  systemctl stop apache2 2>/dev/null || true; apt-get purge -y apache2 apache2-utils ;;
-        dnf|yum) systemctl stop httpd 2>/dev/null || true; "$(detect_pkg_manager)" remove -y httpd ;;
+        apt)  systemctl stop apache2 2>/dev/null || true; apt-get purge -y apache2 apache2-utils; rc=$? ;;
+        dnf|yum) systemctl stop httpd 2>/dev/null || true; "$(detect_pkg_manager)" remove -y httpd; rc=$? ;;
+        *)   log_error "暂不支持"; return 1 ;;
     esac
+    if [[ "${rc}" -ne 0 ]]; then
+        log_error "Apache 卸载失败"
+        return 1
+    fi
     log_success "Apache 已卸载"
 }
 

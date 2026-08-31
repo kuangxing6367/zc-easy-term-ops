@@ -62,21 +62,44 @@ module_execute() {
 # 返回：无
 # ------------------------------------------------------------
 repo_view() {
-    local pm f
+    local pm f found=0 n_active=0 line
     pm=$(detect_pkg_manager)
     log_info "================ 当前软件源配置 ================"
     case "${pm}" in
         apt)
+            # 主配置文件 /etc/apt/sources.list
             echo "--- /etc/apt/sources.list ---"
-            cat /etc/apt/sources.list 2>/dev/null || echo "（文件不存在）"
-            echo "--- /etc/apt/sources.list.d/ ---"
-            if ls /etc/apt/sources.list.d/*.list >/dev/null 2>&1; then
-                for f in /etc/apt/sources.list.d/*.list; do
-                    echo ">>> ${f}"
-                    cat "${f}" 2>/dev/null || true
-                done
+            if [[ -f /etc/apt/sources.list ]]; then
+                cat /etc/apt/sources.list
+                found=1
+                # 统计主文件中的有效源条目
+                while IFS= read -r line; do
+                    case "${line}" in
+                        deb\ *|deb-src\ *) n_active=$((n_active + 1)) ;;
+                    esac
+                done < /etc/apt/sources.list 2>/dev/null || true
             else
-                echo "（无附加源文件）"
+                echo "  （未检测到该文件）"
+                echo "  （现代 Debian/Ubuntu 默认将源配置放在 /etc/apt/sources.list.d/ 下，属正常情况；请查看下方目录内容）"
+            fi
+            # 附加源目录：兼容 .list（旧格式）与 .sources（deb822 新格式，Debian 12+/阿里云等默认）及任意命名文件
+            echo "--- /etc/apt/sources.list.d/ ---"
+            for f in /etc/apt/sources.list.d/*; do
+                [[ -f "${f}" ]] || continue
+                found=1
+                echo ">>> ${f}"
+                cat "${f}" 2>/dev/null || true
+                # 统计有效源条目（.list 的 deb/deb-src 行 与 .sources 的 URIs 行）
+                while IFS= read -r line; do
+                    case "${line}" in
+                        deb\ *|deb-src\ *|URIs:\ *) n_active=$((n_active + 1)) ;;
+                    esac
+                done < "${f}" 2>/dev/null || true
+            done
+            if (( found == 0 )); then
+                echo "  （未找到任何 apt 源配置文件，apt 可能无法正常安装软件）"
+            else
+                echo "  汇总: 共发现 ${n_active} 条有效源条目（deb/URIs 行）"
             fi
             ;;
         dnf|yum)
@@ -139,11 +162,34 @@ mirror_switch() {
         apt)
             local bak="/etc/apt/sources.list.bak.$(date +%s)"
             cp /etc/apt/sources.list "${bak}" 2>/dev/null || true
-            echo "deb ${target_url%/}/ubuntu/ $(lsb_release -cs) main restricted universe multiverse" > /etc/apt/sources.list
-            echo "deb ${target_url%/}/ubuntu/ $(lsb_release -cs)-updates main restricted universe multiverse" >> /etc/apt/sources.list
-            echo "deb ${target_url%/}/ubuntu/ $(lsb_release -cs)-security main restricted universe multiverse" >> /etc/apt/sources.list
-            apt-get update -qq
-            log_success "apt 源已切换（备份: ${bak}）"
+            local codename
+            codename=$(get_codename)
+            if [[ -z "${codename}" ]]; then
+                log_error "无法获取发行版代号，已中止切换（备份: ${bak}）"
+                return 1
+            fi
+            case "$(get_distro)" in
+                ubuntu)
+                    {
+                        echo "deb ${target_url%/}/ubuntu/ ${codename} main restricted universe multiverse"
+                        echo "deb ${target_url%/}/ubuntu/ ${codename}-updates main restricted universe multiverse"
+                        echo "deb ${target_url%/}/ubuntu/ ${codename}-security main restricted universe multiverse"
+                    } > /etc/apt/sources.list
+                    ;;
+                debian|*)
+                    {
+                        echo "deb ${target_url%/}/debian/ ${codename} main contrib non-free"
+                        echo "deb ${target_url%/}/debian/ ${codename}-updates main contrib non-free"
+                        echo "deb ${target_url%/}/debian-security/ ${codename}-security main contrib non-free"
+                    } > /etc/apt/sources.list
+                    ;;
+            esac
+            if apt-get update -qq; then
+                log_success "apt 源已切换（备份: ${bak}）"
+            else
+                log_error "apt 源切换后更新失败（备份: ${bak}），请检查镜像地址与发行版是否匹配"
+                return 1
+            fi
             ;;
         dnf|yum)
             local repo
@@ -178,8 +224,12 @@ tools_install() {
         return 0
     fi
     log_info "安装缺失工具: ${need[*]}"
-    install_pkg "${need[@]}"
-    log_success "工具安装完成"
+    if install_pkg "${need[@]}"; then
+        log_success "工具安装完成"
+    else
+        log_error "部分或全部工具安装失败，请检查软件源配置后重试"
+        return 1
+    fi
 }
 
 # ------------------------------------------------------------
@@ -205,8 +255,12 @@ batch_install() {
     fi
     [[ ${#pkgs[@]} -eq 0 ]] && { log_error "未输入任何软件包"; return 1; }
     log_info "批量安装: ${pkgs[*]}"
-    install_pkg "${pkgs[@]}"
-    log_success "批量安装完成"
+    if install_pkg "${pkgs[@]}"; then
+        log_success "批量安装完成"
+    else
+        log_error "部分或全部软件包安装失败，请检查软件源配置后重试"
+        return 1
+    fi
 }
 
 # ------------------------------------------------------------
@@ -230,12 +284,18 @@ batch_remove() {
     [[ ${#pkgs[@]} -eq 0 ]] && { log_error "未输入任何软件包"; return 1; }
     confirm_action "卸载软件包: ${pkgs[*]}" || return 1
     pm=$(detect_pkg_manager)
+    local rc=0
     case "${pm}" in
-        apt)  apt-get purge -y "${pkgs[@]}" ;;
-        dnf|yum) "${pm}" remove -y "${pkgs[@]}" ;;
-        *)    log_error "暂不支持" ;;
+        apt)  apt-get purge -y "${pkgs[@]}"; rc=$? ;;
+        dnf|yum) "${pm}" remove -y "${pkgs[@]}"; rc=$? ;;
+        *)    log_error "暂不支持"; return 1 ;;
     esac
-    log_success "批量卸载完成"
+    if [[ "${rc}" -eq 0 ]]; then
+        log_success "批量卸载完成"
+    else
+        log_error "部分或全部软件包卸载失败"
+        return 1
+    fi
 }
 
 # ------------------------------------------------------------
@@ -248,8 +308,8 @@ pkg_search() {
     read_input keyword "输入搜索关键字:" ""
     [[ -z "${keyword}" ]] && { log_error "关键字不能为空"; return 1; }
     case "$(detect_pkg_manager)" in
-        apt)  apt-cache search "${keyword}" | head -n 30 ;;
-        dnf|yum) "$(detect_pkg_manager)" search "${keyword}" 2>/dev/null | head -n 30 ;;
+        apt)  apt-cache search "${keyword}" 2>/dev/null | head -n 30 || true ;;
+        dnf|yum) "$(detect_pkg_manager)" search "${keyword}" 2>/dev/null | head -n 30 || true ;;
         *)    log_error "暂不支持" ;;
     esac
 }
@@ -264,8 +324,8 @@ pkg_info() {
     read_input pkg "输入软件包名:" ""
     [[ -z "${pkg}" ]] && { log_error "包名不能为空"; return 1; }
     case "$(detect_pkg_manager)" in
-        apt)  apt-cache show "${pkg}" 2>/dev/null | head -n 40 ;;
-        dnf|yum) "$(detect_pkg_manager)" info "${pkg}" 2>/dev/null | head -n 40 ;;
+        apt)  apt-cache show "${pkg}" 2>/dev/null | head -n 40 || true ;;
+        dnf|yum) "$(detect_pkg_manager)" info "${pkg}" 2>/dev/null | head -n 40 || true ;;
         *)    log_error "暂不支持" ;;
     esac
 }
@@ -384,8 +444,12 @@ third_party_repo() {
                 read_input ppa "输入 PPA 名称（如 ppa:deadsnakes/ppa）:" ""
                 install_pkg software-properties-common
                 add-apt-repository -y "${ppa}"
-                apt-get update -qq
-                log_success "PPA 已添加: ${ppa}"
+                if apt-get update -qq; then
+                    log_success "PPA 已添加: ${ppa}"
+                else
+                    log_error "PPA 已添加但索引刷新失败，请检查网络或 PPA 名称"
+                    return 1
+                fi
             else
                 log_error "PPA 仅适用于 Ubuntu/Debian"
             fi
@@ -394,10 +458,19 @@ third_party_repo() {
             if [[ "${pm}" == "apt" ]]; then
                 install_pkg ca-certificates curl gnupg
                 install -m 0755 -d /etc/apt/keyrings
-                curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
-                apt-get update -qq
-                log_success "Docker CE 源已添加"
+                local docker_distro
+                case "$(get_distro)" in
+                    ubuntu)  docker_distro="ubuntu" ;;
+                    debian|*) docker_distro="debian" ;;
+                esac
+                curl -fsSL "https://download.docker.com/linux/${docker_distro}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+                if apt-get update -qq; then
+                    log_success "Docker CE 源已添加"
+                else
+                    log_error "Docker CE 源已添加但索引刷新失败，请检查网络连通性"
+                    return 1
+                fi
             else
                 install_pkg yum-utils
                 "${pm}" config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo 2>/dev/null || \

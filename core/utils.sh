@@ -50,6 +50,21 @@ get_distro() {
 }
 
 # ------------------------------------------------------------
+# 获取发行版代号（Codename），优先 /etc/os-release
+# 避免依赖可能未安装的 lsb_release
+# 参数：无
+# 输出：bookworm / jammy / ...（失败为空）
+# ------------------------------------------------------------
+get_codename() {
+    if [[ -f /etc/os-release ]]; then
+        local c
+        c=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")
+        [[ -n "${c}" ]] && { echo "${c}"; return 0; }
+    fi
+    lsb_release -cs 2>/dev/null || true
+}
+
+# ------------------------------------------------------------
 # 探测系统架构（Architecture）
 # 参数：无
 # 输出：x86_64/aarch64/armv7l/...
