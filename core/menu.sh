@@ -277,8 +277,9 @@ _tui_row_to_opt() {
     [[ -z "${val}" ]] && return 1
     local -a opts=(${val})
     if (( ${#opts[@]} >= 2 )); then
-        # 双列网格：左列 x<40，右列 x>=40
-        if (( col < 40 )); then
+        # 双列网格：左列 col < 右列起始列，右列从 _TUI_RIGHT_COL 开始
+        # （渲染时按显示宽度固定左列宽度，保证右列起始列与点击分界一致）
+        if (( col < ${_TUI_RIGHT_COL:-30} )); then
             echo "${opts[0]}"
         else
             echo "${opts[1]}"
@@ -513,7 +514,7 @@ _ui_banner() {
 EOF
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.1} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.2} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 
@@ -540,20 +541,30 @@ _ui_sysinfo() {
 }
 
 # ------------------------------------------------------------
-# 模块双列网格
+# 模块双列网格（按显示宽度对齐，右列起始列固定为 _TUI_RIGHT_COL）
 # 参数：无
+# 说明：左列布局 = 2 空格 + "NN." + 空格 + 名称(≤_TUI_LCOL_W 列) + 2 空格
+#       → 右列起始列 = 2 + 3 + 1 + _TUI_LCOL_W + 2 = _TUI_RIGHT_COL
 # ------------------------------------------------------------
 _ui_module_list() {
     local n=${#MODULE_NAMES[@]}
     local half=$(( (n + 1) / 2 ))
+    local lcol_w="${_TUI_LCOL_W:-22}"
     local i
     for ((i = 0; i < half; i++)); do
         local j=$((i + half))
+        local left="  ${COLOR_BOLD}$(printf '%2d.' "$((i + 1))")${COLOR_RESET} "
+        local lname="${MODULE_NAMES[$i]}"
+        if (( $(fm_str_w "${lname}") > lcol_w )); then
+            lname="$(fm_str_clip "${lname}" "${lcol_w}")"
+        fi
+        local lpad=$(( lcol_w - $(fm_str_w "${lname}") ))
+        (( lpad < 0 )) && lpad=0
+        printf '%s%s%*s' "${left}" "${lname}" "${lpad}" ""
         if (( j < n )); then
-            printf "  ${COLOR_BOLD}%2d.${COLOR_RESET} %-20s   ${COLOR_BOLD}%2d.${COLOR_RESET} %s\n" \
-                "$((i + 1))" "${MODULE_NAMES[$i]}" "$((j + 1))" "${MODULE_NAMES[$j]}"
+            printf '  %2d. %s\n' "$((j + 1))" "${MODULE_NAMES[$j]}"
         else
-            printf "  ${COLOR_BOLD}%2d.${COLOR_RESET} %s\n" "$((i + 1))" "${MODULE_NAMES[$i]}"
+            printf '\n'
         fi
     done
     if (( n == 0 )); then
@@ -584,6 +595,8 @@ _ui_plugins() {
 show_main_menu_render() {
     _tui_clear
     _TUI_OPT_ROW_OPT=()
+    _TUI_LCOL_W=22
+    _TUI_RIGHT_COL=30
     _ui_banner
     _ui_sysinfo
     _tui_hr

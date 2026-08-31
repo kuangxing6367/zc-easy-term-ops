@@ -27,11 +27,17 @@ check_run() {
 }
 
 # check_true <描述> <命令...>：命令退出码为 0 则 PASS（用于布尔函数）
+# 注意：run_tests.sh 因 source core/logger.sh 继承 set -e，子 shell 裸调用
+#       返回非零会直接终止脚本，必须用 if 条件吸收退出码
 check_true() {
     local desc="$1"
     shift
-    ( set +e; "$@" ) >/dev/null 2>&1
-    local rc=$?
+    local rc=0
+    if ( set +e; "$@" ) >/dev/null 2>&1; then
+        rc=0
+    else
+        rc=1
+    fi
     if (( rc == 0 )); then
         PASS=$((PASS + 1)); echo "  PASS: ${desc}"
     else
@@ -43,8 +49,12 @@ check_true() {
 check_false() {
     local desc="$1"
     shift
-    ( set +e; "$@" ) >/dev/null 2>&1
-    local rc=$?
+    local rc=0
+    if ( set +e; "$@" ) >/dev/null 2>&1; then
+        rc=0
+    else
+        rc=1
+    fi
     if (( rc != 0 )); then
         PASS=$((PASS + 1)); echo "  PASS: ${desc}"
     else
@@ -73,7 +83,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.1"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.2"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -126,12 +136,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.5.1)"
+echo "[4] 版本一致性 (1.5.2)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.5.1" "${VER_CFG}"
-check_eq "conf.example 版本" "1.5.1" "${VER_EXAMPLE}"
-grep -q "## \[1.5.1\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.1]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.1]"; }
+check_eq "config.sh 版本" "1.5.2" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.2" "${VER_EXAMPLE}"
+grep -q "## \[1.5.2\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.2]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.2]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -247,6 +257,12 @@ check_contains "主菜单网格渲染(右列)" "$(cat "${TMPDIR_TEST}/grid")" "�
 check_eq "鼠标左列映射 row0" "1" "$(_tui_row_to_opt 0 10)"
 check_eq "鼠标右列映射 row0" "14" "$(_tui_row_to_opt 0 50)"
 check_eq "鼠标越界行返回空" "" "$(_tui_row_to_opt 999 10)"
+# 双列网格右列起始列：渲染时左列占 _TUI_LCOL_W=22 列，右列从 _TUI_RIGHT_COL=30 开始；
+# 点击分界必须与渲染列一致（旧硬编码 col<40 会让 14-27 右列点不到）
+_TUI_LCOL_W=22
+_TUI_RIGHT_COL=30
+check_eq "双列分界 col29 归左列" "1" "$(_tui_row_to_opt 0 29)"
+check_eq "双列分界 col30 归右列" "14" "$(_tui_row_to_opt 0 30)"
 check_eq "键盘输入 0" "0" "$(echo '0' | get_user_choice 26 2>/dev/null)"
 check_eq "键盘输入 q" "q" "$(echo 'q' | get_user_choice 26 2>/dev/null)"
 check_eq "非法输入回退" "5" "$(printf 'abc\n5\n' | get_user_choice 26 2>/dev/null)"
@@ -347,6 +363,39 @@ check_eq "SGR 正常解析" "0 15 10" "$(sgr_int '0;15;10')"
 check_eq "SGR 尾随分号" "0 15 10" "$(sgr_int '0;15;10;')"
 check_eq "SGR 异常字节夹带" "0 15 10" "$(sgr_int 'a0b;1x5;1y0')"
 check_eq "SGR 缺段" "0 0 0" "$(sgr_int '0;')"
+
+# ---------- 13b. 文件管理器 ../ 上级入口与危险操作防护 ----------
+echo ""
+echo "[13b] 文件管理器 ../ 上级入口与防护"
+TMP_FM="$(mktemp -d)"
+mkdir -p "${TMP_FM}/subdir"
+FM_PWD="${TMP_FM}"; FM_CURSOR=0; FM_OFFSET=0; FM_WINH=20; FM_LEN=0; FM_LIST=(); FM_MARKED=(); FM_STATUS_MSG=""
+fm_refresh_list
+check_eq "列表首项为上级目录 .." "D|..|$(dirname "${TMP_FM}")" "${FM_LIST[0]}"
+check_true "fm_cur_is_parent 识别 .." fm_cur_is_parent
+FM_CURSOR=1
+check_false "普通项非上级目录" fm_cur_is_parent
+FM_CURSOR=0
+fm_toggle_mark
+check_eq "标记 ../ 被拒绝" "0" "${#FM_MARKED[@]}"
+fm_clip_set "copy"
+check_eq "复制 ../ 被拒绝" "" "${FM_CLIP_MODE:-}"
+rm -rf "${TMP_FM}"
+
+# ---------- 13c. PID 锁（单实例 + stale 过期清理） ----------
+echo ""
+echo "[13c] PID 锁：单实例防并发 + 过期锁自动清理"
+# shellcheck source=/dev/null
+source "${ZETOPS_ROOT}/core/main.sh"
+LOCK_FILE="${TMPDIR_TEST}/zetops_test.lock"
+rm -f "${LOCK_FILE}"
+check_true "PID 锁：首次加锁成功" check_lock
+check_false "PID 锁：存活实例占用被拒绝" check_lock
+printf '999999\n' > "${LOCK_FILE}"
+check_true "PID 锁：过期 PID 自动清理后加锁成功" check_lock
+check_eq "PID 锁：锁文件记录当前 PID" "$$" "$(cat "${LOCK_FILE}")"
+# cleanup 应释放锁（删除锁文件）；用 _LOCK_OWNED 保护不误删他人锁
+rm -f "${LOCK_FILE}"
 
 # ---------- 汇总 ----------
 echo ""

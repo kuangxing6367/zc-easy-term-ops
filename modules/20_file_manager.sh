@@ -99,64 +99,7 @@ fm_tui_do() {
 # 说明：手动 UTF-8 解码计数，不依赖 locale——在 LC_ALL=C 下
 #       ${#s}/${s:i:1} 会按字节切分导致中文宽度算成 3 倍，
 #       进而使工具栏点击区域与列表布局错位（"布局乱+点击不符"的常见根因）
-# ------------------------------------------------------------
-fm_str_w() {
-    local s="$1" i=0 n=0 len byte clen
-    local LC_ALL=C
-    len=${#s}
-    while (( i < len )); do
-        byte=$(printf '%d' "'${s:i:1}")
-        if (( byte < 0x80 )); then
-            n=$((n + 1)); i=$((i + 1))
-        else
-            clen=1
-            if   (( byte >= 0xF0 )); then clen=4
-            elif (( byte >= 0xE0 )); then clen=3
-            elif (( byte >= 0xC0 )); then clen=2
-            fi
-            n=$((n + 2))          # 东亚宽字符按 2 列
-            i=$((i + clen))
-        fi
-    done
-    printf '%d' "${n}"
-}
-
-# ------------------------------------------------------------
-# 按显示宽度截断字符串（超宽尾部追加 …，保持字符边界，不依赖 locale）
-# 参数：$1 字符串  $2 最大显示列数
-# 输出：截断后的字符串
-# ------------------------------------------------------------
-fm_str_clip() {
-    local s="$1" maxw="$2" total
-    total=$(fm_str_w "${s}")
-    if (( total <= maxw )); then
-        printf '%s' "${s}"
-        return 0
-    fi
-    # 需要截断：留 1 列给省略号 …（U+2026 按 1 列）
-    (( maxw < 3 )) && { printf '…'; return 0; }
-    local i=0 w=0 n=0 len byte clen cw
-    local LC_ALL=C
-    len=${#s}
-    while (( i < len )); do
-        byte=$(printf '%d' "'${s:i:1}")
-        if (( byte < 0x80 )); then
-            clen=1; cw=1
-        else
-            clen=1; cw=2
-            if   (( byte >= 0xF0 )); then clen=4
-            elif (( byte >= 0xE0 )); then clen=3
-            elif (( byte >= 0xC0 )); then clen=2
-            fi
-        fi
-        if (( w + cw > maxw - 1 )); then
-            break
-        fi
-        n=$((i + clen))
-        w=$((w + cw)); i=$((i + clen))
-    done
-    printf '%s…' "${s:0:n}"
-}
+# 实现已提升至 core/utils.sh（fm_str_w / fm_str_clip），此处复用公共函数
 
 # ------------------------------------------------------------
 # 读取一个输入事件（键盘或鼠标），结果写入 FM_EV/FM_EVK/FM_EVB/FM_EVX/FM_EVY
@@ -272,8 +215,16 @@ fm_refresh_list() {
     done 2>/dev/null || true
 
     FM_LIST=()
+    # 上级目录入口（固定第一项，等价于普通文件管理器的 ../）；
+    # 根目录 / 的上级仍为 /，不重复添加避免死循环
+    local parent=""
+    parent=$(dirname "${FM_PWD}" 2>/dev/null || true)
+    if [[ -n "${parent}" && "${parent}" != "${FM_PWD}" ]]; then
+        FM_LIST+=("D|..|${parent}")
+    fi
     if (( ${#d_entries[@]} > 0 )); then
-        mapfile -t FM_LIST < <(printf '%s\n' "${d_entries[@]}" | LC_ALL=C sort -t'|' -k2 2>/dev/null || true)
+        mapfile -t sd < <(printf '%s\n' "${d_entries[@]}" | LC_ALL=C sort -t'|' -k2 2>/dev/null || true)
+        FM_LIST+=("${sd[@]}")
     fi
     if (( ${#f_entries[@]} > 0 )); then
         mapfile -t sd < <(printf '%s\n' "${f_entries[@]}" | LC_ALL=C sort -t'|' -k2 2>/dev/null || true)
@@ -358,8 +309,12 @@ fm_render() {
         done
         size=""; perm=""
         if [[ "${type}" == "F" ]]; then
-            size=$(fm_human_size "$(stat -c%s "${full}" 2>/dev/null || echo 0)")
-            perm=$(stat -c '%A' "${full}" 2>/dev/null || echo "?")
+            # 单次 stat 同时取大小与权限，避免每个文件两次系统调用（大目录渲染提速）
+            local _sz _pm
+            read -r _sz _pm < <(stat -c '%s %A' "${full}" 2>/dev/null || true)
+            _sz="${_sz:-0}"; _pm="${_pm:-?}"
+            size=$(fm_human_size "${_sz}")
+            perm="${_pm}"
         fi
         name_disp="${name}"
         [[ "${type}" == "D" ]] && name_disp="${name}/"
@@ -425,6 +380,16 @@ fm_cur_full() {
 }
 
 # ------------------------------------------------------------
+# 光标是否位于上级目录（../）项
+# 说明：../ 项的 full 是父目录路径，任何删除/标记/复制/剪切/
+#       重命名/权限修改都不应作用到它，否则会误操作整个父目录
+# 返回：0=是上级目录  1=否
+# ------------------------------------------------------------
+fm_cur_is_parent() {
+    [[ "${FM_LIST[${FM_CURSOR}]:-}" == "D|..|"* ]]
+}
+
+# ------------------------------------------------------------
 # 打开光标条目：目录→进入；文件→快捷操作菜单
 # ------------------------------------------------------------
 fm_open_cursor() {
@@ -444,6 +409,10 @@ fm_open_cursor() {
 # ------------------------------------------------------------
 fm_toggle_mark() {
     local full
+    if fm_cur_is_parent; then
+        FM_STATUS_MSG="上级目录 ../ 不可标记"
+        return
+    fi
     full=$(fm_cur_full)
     [[ -z "${full}" ]] && return
     local i p
@@ -485,6 +454,10 @@ fm_clip_read() {
 # ------------------------------------------------------------
 fm_clip_set() {
     local mode="$1" paths=() cur="" p
+    if fm_cur_is_parent; then
+        FM_STATUS_MSG="上级目录 ../ 不可复制/剪切"
+        return
+    fi
     cur=$(fm_cur_full)
     [[ -n "${cur}" ]] && paths+=("${cur}")
     for p in "${FM_MARKED[@]}"; do
@@ -551,6 +524,11 @@ fm_clip_paste() {
 # ------------------------------------------------------------
 fm_delete_marked() {
     local paths=() cur="" p
+    if fm_cur_is_parent; then
+        echo "  上级目录 ../ 不可删除"
+        press_enter
+        return
+    fi
     cur=$(fm_cur_full)
     [[ -n "${cur}" ]] && paths+=("${cur}")
     for p in "${FM_MARKED[@]}"; do
@@ -695,10 +673,10 @@ fm_handle_event() {
         a|A) fm_tui_do fm_action_menu ;;
         b|B) fm_tui_do fm_bookmark_menu ;;
         t|T) fm_tui_do fm_tree_menu ;;
-        m|M) fm_tui_do fm_chmod_file "$(fm_cur_full)" ;;
+        m|M) if fm_cur_is_parent; then FM_STATUS_MSG="上级目录 ../ 不可修改权限"; else fm_tui_do fm_chmod_file "$(fm_cur_full)"; fi ;;
         n|N) fm_tui_do fm_mkdir_prompt ;;
-        e|E) fm_tui_do fm_edit_file "$(fm_cur_full)" ;;
-        o|O) fm_tui_do fm_view_file "$(fm_cur_full)" ;;
+        e|E) if fm_cur_is_parent; then FM_STATUS_MSG="上级目录 ../ 不可编辑"; else fm_tui_do fm_edit_file "$(fm_cur_full)"; fi ;;
+        o|O) if fm_cur_is_parent; then FM_STATUS_MSG="上级目录 ../ 不可查看"; else fm_tui_do fm_view_file "$(fm_cur_full)"; fi ;;
         *) : ;;
     esac
     return 0

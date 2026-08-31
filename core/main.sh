@@ -3,7 +3,7 @@
 # 文件：core/main.sh
 # 功能：主程序入口（主菜单调度核心）
 # 作者：zc 团队
-# 版本：1.5.1
+# 版本：1.5.2
 # 日期：2026-08-05
 # 说明：加载核心库 → 环境检查 → 锁检查 → 扫描模块/插件 → 双协议调度
 #   （默认 CLI：--help/--version/--list/--run/--backup；--tui 进入交互界面）
@@ -43,8 +43,10 @@ cleanup() {
     stop_spinner 2>/dev/null || true
     # 关闭 TUI 鼠标捕获（若已开启；X10 + SGR 双模式）
     printf '\e[?1000l\e[?1002l\e[?1006l' > /dev/tty 2>/dev/null || true
-    if [[ -n "${_LOCK_FD:-}" ]]; then
-        flock -u "${_LOCK_FD}" 2>/dev/null || true
+    # 仅当本进程持有锁时删除锁文件（异常断开时文件残留由 check_lock 的过期检测兜底）
+    if [[ "${_LOCK_OWNED:-0}" == "1" ]]; then
+        rm -f "${LOCK_FILE}" 2>/dev/null || true
+        _LOCK_OWNED=0
     fi
     exit 0
 }
@@ -75,21 +77,31 @@ check_deps() {
 
 # ------------------------------------------------------------
 # 单实例锁检查（防止并发运行）
-# 参数：无
-# 返回：0=获得锁 1=已被占用
+# 说明：PID 锁 + 过期检测。锁文件记录启动进程 PID；若 PID 已不存在
+#      （例如 SSH 断开导致进程被终止、但锁文件未来得及清理），
+#       视为过期锁自动清理并继续，避免"断开后锁文件残留卡死下次启动"。
+# 返回：0=获得锁 1=已被其他存活实例占用
 # ------------------------------------------------------------
 check_lock() {
-    if ! check_command flock; then
-        log_debug "环境无 flock，跳过单实例锁"
-        _LOCK_FD=""
-        return 0
+    local dir
+    dir=$(dirname "${LOCK_FILE}" 2>/dev/null || echo /var/run)
+    mkdir -p "${dir}" 2>/dev/null || true
+    if [[ -f "${LOCK_FILE}" ]]; then
+        local old_pid=""
+        old_pid=$(cat "${LOCK_FILE}" 2>/dev/null | tr -dc '0-9')
+        if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
+            log_error "ZETOPS 已在运行（PID ${old_pid}，锁文件 ${LOCK_FILE}），请勿重复启动"
+            return 1
+        fi
+        # 记录 PID 已不在运行（进程退出/被杀）→ 过期锁，清理后继续
+        log_warning "检测到过期锁文件（PID ${old_pid:-未知} 已退出），自动清理后继续"
+        rm -f "${LOCK_FILE}" 2>/dev/null || true
     fi
-    mkdir -p /var/run 2>/dev/null || true
-    exec {_LOCK_FD}>"${LOCK_FILE}"
-    if ! flock -n "${_LOCK_FD}"; then
-        log_error "ZETOPS 已在运行（锁文件 ${LOCK_FILE}），请勿重复启动"
+    if ! printf '%s\n' "$$" > "${LOCK_FILE}" 2>/dev/null; then
+        log_error "无法写入锁文件 ${LOCK_FILE}"
         return 1
     fi
+    _LOCK_OWNED=1
     return 0
 }
 

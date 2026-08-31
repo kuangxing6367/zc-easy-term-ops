@@ -302,3 +302,69 @@ require() {
         exit 1
     fi
 }
+
+# ------------------------------------------------------------
+# 字符串显示宽度（非 ASCII 按 2 列估算，含中文/Emoji）
+# 参数：$1 字符串
+# 输出：列数
+# 说明：手动 UTF-8 解码计数，不依赖 locale——在 LC_ALL=C 下
+#       ${#s}/${s:i:1} 会按字节切分导致中文宽度算成 3 倍，
+#       进而使表格/工具栏点击区域错位（"点击位置不符"的常见根因）
+# ------------------------------------------------------------
+fm_str_w() {
+    local s="$1" i=0 n=0 len byte clen
+    local LC_ALL=C
+    len=${#s}
+    while (( i < len )); do
+        byte=$(printf '%d' "'${s:i:1}")
+        if (( byte < 0x80 )); then
+            n=$((n + 1)); i=$((i + 1))
+        else
+            clen=1
+            if   (( byte >= 0xF0 )); then clen=4
+            elif (( byte >= 0xE0 )); then clen=3
+            elif (( byte >= 0xC0 )); then clen=2
+            fi
+            n=$((n + 2))          # 东亚宽字符按 2 列
+            i=$((i + clen))
+        fi
+    done
+    printf '%d' "${n}"
+}
+
+# ------------------------------------------------------------
+# 按显示宽度截断字符串（超宽尾部追加 …，保持字符边界，不依赖 locale）
+# 参数：$1 字符串  $2 最大显示列数
+# 输出：截断后的字符串
+# ------------------------------------------------------------
+fm_str_clip() {
+    local s="$1" maxw="$2" total
+    total=$(fm_str_w "${s}")
+    if (( total <= maxw )); then
+        printf '%s' "${s}"
+        return 0
+    fi
+    # 需要截断：留 1 列给省略号 …（U+2026 按 1 列）
+    (( maxw < 3 )) && { printf '…'; return 0; }
+    local i=0 w=0 n=0 len byte clen cw
+    local LC_ALL=C
+    len=${#s}
+    while (( i < len )); do
+        byte=$(printf '%d' "'${s:i:1}")
+        if (( byte < 0x80 )); then
+            clen=1; cw=1
+        else
+            clen=1; cw=2
+            if   (( byte >= 0xF0 )); then clen=4
+            elif (( byte >= 0xE0 )); then clen=3
+            elif (( byte >= 0xC0 )); then clen=2
+            fi
+        fi
+        if (( w + cw > maxw - 1 )); then
+            break
+        fi
+        n=$((i + clen))
+        w=$((w + cw)); i=$((i + clen))
+    done
+    printf '%s…' "${s:0:n}"
+}
