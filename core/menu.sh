@@ -77,10 +77,30 @@ _tui_clear() {
 # 打印一行文本并推进 _TUI_ROW（原样输出，适合含 ANSI 颜色的行）
 # 参数：$* 该行内容
 # 返回：无
+# 说明：_TUI_BUF_ON=1 时改为追加到渲染缓冲 _TUI_RENDER_BUF，
+#       由 _tui_flush_render 一次性输出——把整屏渲染拼成一个大字符串
+#       只做一次 printf，大幅缩短输出窗口，避免渲染期间鼠标事件在
+#       tty 输入缓冲堆积（表现为"某排点不动/悬停残留被当文本"）。
 # ------------------------------------------------------------
 _tui_line() {
-    printf '%s\n' "$*"
+    if (( ${_TUI_BUF_ON:-0} == 1 )); then
+        _TUI_RENDER_BUF+="$*"$'\n'
+    else
+        printf '%s\n' "$*"
+    fi
     _TUI_ROW=$(( _TUI_ROW + 1 ))
+}
+
+# ------------------------------------------------------------
+# 一次性输出渲染缓冲并清空（缓冲模式下由渲染函数末尾调用）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+_tui_flush_render() {
+    if [[ -n "${_TUI_RENDER_BUF:-}" ]]; then
+        printf '%s' "${_TUI_RENDER_BUF}"
+    fi
+    _TUI_RENDER_BUF=""
 }
 
 # ------------------------------------------------------------
@@ -89,7 +109,11 @@ _tui_line() {
 # 返回：无
 # ------------------------------------------------------------
 _tui_nl() {
-    printf '\n'
+    if (( ${_TUI_BUF_ON:-0} == 1 )); then
+        _TUI_RENDER_BUF+=$'\n'
+    else
+        printf '\n'
+    fi
     _TUI_ROW=$(( _TUI_ROW + 1 ))
 }
 
@@ -101,7 +125,13 @@ _tui_nl() {
 _tui_hr() {
     local n="${1:-60}"
     [[ "${n}" =~ ^[0-9]+$ ]] || n=60
-    printf "${COLOR_CYAN}%${n}s${COLOR_RESET}\n" "" | tr ' ' '─'
+    local line
+    line=$(printf "${COLOR_CYAN}%${n}s${COLOR_RESET}" "" | tr ' ' '─')
+    if (( ${_TUI_BUF_ON:-0} == 1 )); then
+        _TUI_RENDER_BUF+="${line}"$'\n'
+    else
+        printf '%s\n' "${line}"
+    fi
     _TUI_ROW=$(( _TUI_ROW + 1 ))
 }
 
@@ -182,28 +212,21 @@ _ord() {
 _tui_finalize_rows() {
     [[ -e /dev/tty ]] || return 0
     local n=$(( _TUI_ROW - 1 ))   # 已渲染内容总行数
-    local r=0 tries=0 rows=0
+    local rows=0 r=0
     _tty_flush
-    for (( tries = 0; tries < 2; tries++ )); do
-        printf '\033[6n' > /dev/tty
-        IFS='[;' read -r -s -d 'R' -t 0.5 _ r _ < /dev/tty 2>/dev/null || r=0
-        [[ "${r}" =~ ^[0-9]+$ ]] || r=0
-        (( r > 0 )) && break
-    done
-    if (( r <= 0 )); then
-        # DSR 查询失败：用屏幕高度估算光标行。
-        # 内容滚动后光标停在最后可见行 → r = min(n, 屏幕行数)；
-        # 未滚动时 r = n。避免 fallback 到"未滚动"导致滚动后整屏点击错位
-        rows=$(stty size < /dev/tty 2>/dev/null | awk '{print $1}')
-        rows=${rows:-0}
-        [[ "${rows}" =~ ^[0-9]+$ ]] || rows=0
-        if (( rows > 0 )); then
-            r=$(( n > rows ? rows : n ))
-        else
-            r="${n}"
-        fi
+    # 用终端屏幕高度估算光标行，替代 DSR(\e[6n) 查询：
+    # DSR 依赖终端响应，XShell/部分终端响应慢或格式异常会导致校准错误（"某排点不动"）。
+    # 主菜单渲染后光标停在最后一行：内容未滚动时在内容末行 n，
+    # 内容滚动后停在屏幕最后可见行 rows → r = min(n, rows)。
+    rows=$(stty size < /dev/tty 2>/dev/null | awk '{print $1}')
+    rows=${rows:-0}
+    [[ "${rows}" =~ ^[0-9]+$ ]] || rows=0
+    if (( rows > 0 && n > rows )); then
+        r="${rows}"
+    else
+        r="${n}"
     fi
-    # 无论查询成败，清空 DSR 响应的残留字节，防止其被后续当普通文本回显
+    # 清空可能残留的字节（含 DSR 响应），防止其被后续当普通文本回显
     _tty_flush
     local off=$(( r - n ))
     if (( off != 0 )); then
@@ -225,7 +248,7 @@ _tui_hl() {
     local line="$1" lead="" body=""
     lead="${line%%[![:space:]]*}"          # 保留前导空白，保持列对齐
     body="${line#"${lead}"}"
-    printf '%s\e[7m▸ %s\e[0m\n' "${lead}" "${body}"
+    printf '%s\e[7m▸ %s\e[0m' "${lead}" "${body}"
 }
 
 # ------------------------------------------------------------
@@ -263,15 +286,17 @@ _tui_capture() {
     for k in "${!rowmap[@]}"; do
         _TUI_OPT_ROW_OPT[${k}]="${rowmap[$k]}"
     done
-    # 2) 逐行重放输出，命中选中项的行整行高亮
+    # 2) 逐行拼装（命中选中项的行整行高亮），经 _tui_line 输出——
+    #    缓冲模式下全部进 _TUI_RENDER_BUF，由渲染函数末尾一次性 printf，
+    #    缩短渲染输出窗口，防止鼠标事件堆积
     local sel="${_TUI_SELECTED:-}"
     lineno=0
     while IFS= read -r line; do
         local r=$((start + lineno))
         if [[ -n "${sel}" ]] && [[ " ${rowmap[${r}]:-} " == *" ${sel} "* ]]; then
-            _tui_hl "${line}"
+            _tui_line "$(_tui_hl "${line}")"
         else
-            printf '%s\n' "${line}"
+            _tui_line "${line}"
         fi
         lineno=$((lineno + 1))
     done <<< "${out}"
@@ -328,7 +353,12 @@ _tui_read_event() {
         else
             IFS= read -r -s -n 1 -t 1 nxt || nxt=""
         fi
-        [[ -z "${nxt}" ]] && { echo "none"; return 1; }
+        [[ -z "${nxt}" ]] && {
+            # ESC 单独到达（如悬停事件被拆分）：丢弃并清空残留，
+            # 防止剩余序列字节被后续当普通文本回显
+            [[ "${src}" == "tty" ]] && _tty_flush
+            echo "none"; return 1
+        }
 
         if [[ "${nxt}" == "[" ]]; then
             if [[ "${src}" == "tty" ]]; then
@@ -352,6 +382,11 @@ _tui_read_event() {
                     btn=$(( $(_ord "${b1}") - 32 ))
                     x=$(( $(_ord "${b2}") - 32 ))
                     y=$(( $(_ord "${b3}") - 32 ))
+                    # 丢弃鼠标指针信息：移动/悬停/拖拽/滚轮（btn>=32）不产生输入
+                    if (( btn >= 32 )); then
+                        echo "none"
+                        return 1
+                    fi
                     printf 'mouse:%d,%d,%d' "${btn}" "${x}" "${y}"
                     return 0
                 fi
@@ -375,6 +410,12 @@ _tui_read_event() {
                 local body="${seq%[Mm]}" term="${seq: -1}"
                 IFS=';' read -r btn x y <<< "${body}"
                 if [[ "${btn}" =~ ^[0-9]+$ ]] && [[ "${x}" =~ ^[0-9]+$ ]] && [[ "${y}" =~ ^[0-9]+$ ]]; then
+                    # 丢弃鼠标指针信息：移动/悬停/拖拽/滚轮等（btn>=32）不产生输入，
+                    # 防止其转义序列被当普通文本回显
+                    if (( btn >= 32 )); then
+                        echo "none"
+                        return 1
+                    fi
                     if [[ "${term}" == "M" ]]; then
                         printf 'mouse:%d,%d,%d' "${btn}" "${x}" "${y}"
                     else
@@ -395,6 +436,15 @@ _tui_read_event() {
     if [[ "${ch}" == $'\n' || "${ch}" == $'\r' ]]; then
         echo "line:"
         return 0
+    fi
+    # 丢弃控制字符（鼠标序列残留/功能键等），不回显，防止乱码污染屏幕
+    if (( ${#ch} == 1 )); then
+        local _och
+        LC_ALL=C printf -v _och '%d' "'${ch}"
+        if (( _och < 32 || _och == 127 )); then
+            echo "none"
+            return 1
+        fi
     fi
     # 普通输入：回显首个字符，再读取行剩余部分（带超时，避免残留字节无限等待）
     printf '%s' "${ch}" >&2
@@ -516,8 +566,8 @@ get_user_choice() {
 # 参数：无
 # ------------------------------------------------------------
 _ui_banner() {
-    _tui_line "${COLOR_BOLD}${COLOR_BLUE}"
-    cat <<'EOF'
+    local logo=""
+    logo=$(cat <<'EOF'
  ███████╗███████╗████████╗ ██████╗ ██████╗ ███████╗
  ╚══███╔╝██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝
    ███╔╝ █████╗     ██║   ██║   ██║██████╔╝███████╗
@@ -525,9 +575,17 @@ _ui_banner() {
  ███████╗███████╗   ██║   ╚██████╔╝██║  ██║███████║
  ╚══════╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚══════╝
 EOF
+)
+    _tui_line "${COLOR_BOLD}${COLOR_BLUE}"
+    # logo 进渲染缓冲（缓冲模式下与整屏内容一起一次性输出）
+    if (( ${_TUI_BUF_ON:-0} == 1 )); then
+        _TUI_RENDER_BUF+="${logo}"$'\n'
+    else
+        printf '%s\n' "${logo}"
+    fi
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.3} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.4} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 
@@ -610,6 +668,8 @@ show_main_menu_render() {
     _TUI_OPT_ROW_OPT=()
     _TUI_LCOL_W=22
     _TUI_RIGHT_COL=30
+    # 缓冲模式：整屏拼成大字符串，末尾一次性 printf（缩短渲染窗口，防鼠标事件堆积）
+    _TUI_BUF_ON=1; _TUI_RENDER_BUF=""
     _ui_banner
     _ui_sysinfo
     _tui_hr
@@ -620,6 +680,8 @@ show_main_menu_render() {
     _tui_hr
     _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}q${COLOR_RESET}. 退出    ${COLOR_GRAY}点击菜单项 = 选中（高亮），再次点击同一项 = 确认进入；数字回车 = 直接进入${COLOR_RESET}"
     _tui_nl
+    _TUI_BUF_ON=0
+    _tui_flush_render
 }
 
 # ------------------------------------------------------------
@@ -642,6 +704,7 @@ show_sub_menu_render() {
     local idx="$1"
     _tui_clear
     _TUI_OPT_ROW_OPT=()
+    _TUI_BUF_ON=1; _TUI_RENDER_BUF=""
     _tui_line "${COLOR_BOLD}${COLOR_CYAN}"
     _tui_line "  ┌────────────────────────────────────────────────────┐"
     _tui_line "  │  ${module_name}  ▸  输入 0 返回主菜单（鼠标点击选中，再点确认）"
@@ -649,6 +712,8 @@ show_sub_menu_render() {
     _tui_line "${COLOR_RESET}"
     _tui_run module_description
     _tui_capture module_menu
+    _TUI_BUF_ON=0
+    _tui_flush_render
 }
 
 # ------------------------------------------------------------
@@ -691,12 +756,15 @@ show_plugin_menu_render() {
     local idx="$1"
     _tui_clear
     _TUI_OPT_ROW_OPT=()
+    _TUI_BUF_ON=1; _TUI_RENDER_BUF=""
     _tui_line "${COLOR_BOLD}${COLOR_CYAN}"
     _tui_line "  ┌────────────────────────────────────────────────────┐"
     _tui_line "  │  [插件] ${name}  ▸  输入 0 返回主菜单（鼠标点击选中，再点确认）"
     _tui_line "  └────────────────────────────────────────────────────┘"
     _tui_line "${COLOR_RESET}"
     _tui_capture plugin_menu
+    _TUI_BUF_ON=0
+    _tui_flush_render
 }
 
 # ------------------------------------------------------------

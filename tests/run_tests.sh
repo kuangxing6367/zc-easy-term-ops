@@ -83,7 +83,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.3"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.4"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -136,12 +136,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.5.3)"
+echo "[4] 版本一致性 (1.5.4)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.5.3" "${VER_CFG}"
-check_eq "conf.example 版本" "1.5.3" "${VER_EXAMPLE}"
-grep -q "## \[1.5.3\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.3]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.3]"; }
+check_eq "config.sh 版本" "1.5.4" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.4" "${VER_EXAMPLE}"
+grep -q "## \[1.5.4\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.4]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.4]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -304,7 +304,7 @@ eval "${_tui_read_event_real}"
 rm -f "${EV_FILE_T}" "${EV_FILE_T}.tmp"
 
 echo ""
-echo "[10c] _tui_read_event SGR 按下/释放解析"
+echo "[10c] _tui_read_event SGR 按下/释放解析 + 鼠标指针信息丢弃"
 r=$(printf '\033[<0;10;5M' | { _tui_read_event stdin 2>/dev/null; })
 check_eq "SGR 按下(M) 解析" "mouse:0,10,5" "${r}"
 r=$(printf '\033[<0;10;5m' | { _tui_read_event stdin 2>/dev/null; })
@@ -312,6 +312,16 @@ check_eq "SGR 释放(m) 按钮号+3" "mouse:3,10,5" "${r}"
 r=$(printf '\033[M\x20\x21\x22' | { _tui_read_event stdin 2>/dev/null; })
 # X10：ESC[M 后三个字节各 +32；\x20->btn0 \x21->x1 \x22->y2
 check_eq "X10 按下解析" "mouse:0,1,2" "${r}"
+# 鼠标指针（移动/悬停/拖拽，btn>=32）必须被丢弃（返回 none，不是 mouse 事件）
+r=$(printf '\033[<32;10;5M' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "SGR 移动事件丢弃" "none" "${r}"
+r=$(printf '\033[<35;10;5M' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "SGR 拖拽事件丢弃" "none" "${r}"
+r=$(printf '\033[<64;10;5M' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "SGR 滚轮事件丢弃" "none" "${r}"
+# 控制字符（序列残留/功能键）不回显，不进入普通输入
+r=$(printf '\x01' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "控制字符丢弃" "none" "${r}"
 
 echo ""
 echo "[11] CLI 协议"
@@ -427,6 +437,62 @@ if (( FM_OFFSET + 6 - 4 < FM_LEN )); then
     check_eq "点击不同项不进入" "0" "${_fm_open_cursor_called}"
 fi
 eval "${_fm_open_cursor_real}"
+rm -rf "${TMP_FM}"
+
+# ---------- 13e. 文件管理器编辑回退链（nano→vim→vi→ed） ----------
+echo ""
+echo "[13e] 文件管理器编辑回退链（缺失/异常自动切换）"
+TMP_FM="$(mktemp -d)"
+printf 'hello\n' > "${TMP_FM}/target.txt"
+_fm_cur_full_real="$(declare -f fm_cur_full 2>/dev/null || true)"
+_fm_pick_file_real="$(declare -f fm_pick_file 2>/dev/null || true)"
+_fm_ls_real="$(declare -f log_success 2>/dev/null || true)"
+_fm_le_real="$(declare -f log_error 2>/dev/null || true)"
+_fm_lw_real="$(declare -f log_warning 2>/dev/null || true)"
+_fm_audit_real="$(declare -f audit_log 2>/dev/null || true)"
+declare -A _ed_avail _ed_rcs
+_ed_calls=()
+check_command() { [[ "${_ed_avail[$1]:-0}" == "1" ]]; }
+command() { _ed_calls+=("$1"); return "${_ed_rcs[$1]:-0}"; }
+fm_cur_full() { echo "${TMP_FM}/target.txt"; }
+fm_pick_file() { echo ""; }
+log_success() { :; }
+log_error() { :; }
+log_warning() { :; }
+audit_log() { :; }
+# 场景1：nano 可用且正常退出 → 用 nano，不再切换
+_ed_avail[nano]=1; _ed_avail[vim]=1; _ed_rcs[nano]=0; _ed_calls=()
+fm_edit_file "${TMP_FM}/target.txt" >/dev/null 2>&1
+check_eq "回退链: nano 正常只用 nano" "nano" "${_ed_calls[0]:-}"
+check_eq "回退链: nano 成功不再切换" "1" "${#_ed_calls[@]}"
+# 场景2：nano 缺失 → vim 兜底
+_ed_avail[nano]=0; _ed_avail[vim]=1; _ed_rcs[vim]=0; _ed_calls=()
+fm_edit_file "${TMP_FM}/target.txt" >/dev/null 2>&1
+check_eq "回退链: nano 缺失用 vim" "vim" "${_ed_calls[0]:-}"
+# 场景3：nano 异常(rc=3) → 自动切换 vim 并成功
+_ed_avail[nano]=1; _ed_avail[vim]=1; _ed_rcs[nano]=3; _ed_rcs[vim]=0; _ed_calls=()
+fm_edit_file "${TMP_FM}/target.txt" >/dev/null 2>&1
+check_eq "回退链: nano 异常切换 vim" "vim" "${_ed_calls[1]:-}"
+check_eq "回退链: 异常后成功(共2次)" "2" "${#_ed_calls[@]}"
+# 场景4：全部不可用 → 返回非零（if 条件吸收退出码，防 set -e 中断）
+_ed_avail[nano]=0; _ed_avail[vim]=0; _ed_avail[vi]=0; _ed_avail[ed]=0; _ed_calls=()
+_ed_rc4=1
+if ( set +e; fm_edit_file "${TMP_FM}/target.txt" >/dev/null 2>&1 ); then
+    _ed_rc4=0
+fi
+check_eq "回退链: 无编辑器返回非零" "1" "${_ed_rc4}"
+# 场景5：空参优先当前选中文件
+_ed_avail[nano]=1; _ed_avail[vim]=1; _ed_rcs[nano]=0; _ed_calls=()
+fm_edit_file "" >/dev/null 2>&1
+check_eq "回退链: 空参用当前选中文件" "nano" "${_ed_calls[0]:-}"
+eval "${_fm_cur_full_real}"
+eval "${_fm_pick_file_real}"
+eval "${_fm_ls_real}"
+eval "${_fm_le_real}"
+eval "${_fm_lw_real}"
+eval "${_fm_audit_real}"
+unset -f command
+unset _ed_avail _ed_rcs _ed_calls
 rm -rf "${TMP_FM}"
 
 # ---------- 汇总 ----------

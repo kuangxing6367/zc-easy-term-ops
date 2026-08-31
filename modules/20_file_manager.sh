@@ -20,7 +20,7 @@ set -euo pipefail
 
 module_name="文件管理器"
 module_short="file_manager"
-module_version="2.1.0"
+module_version="2.2.0"
 
 FM_BOOKMARKS="${FM_BOOKMARKS:-${HOME}/.zetops/fm_bookmarks}"
 FM_CLIPBOARD="${FM_CLIPBOARD:-${HOME}/.zetops/fm_clipboard}"
@@ -268,34 +268,43 @@ fm_render() {
     (( FM_WINH < 4 )) && FM_WINH=4
 
     local i r
+    # 渲染缓冲：整屏拼成一个大字符串，末尾一次性 printf，
+    # 缩短渲染输出窗口，避免渲染期间鼠标事件在 tty 输入缓冲堆积
+    local buf="" line=""
 
     # 标题行
-    printf '\e[H\e[30;47m ZETOPS 文件管理器 v%s │ %s \e[0m\e[K\n' "${module_version}" "$(fm_icon_path "${FM_PWD}")"
+    printf -v line '\e[H\e[30;47m ZETOPS 文件管理器 v%s │ %s \e[0m\e[K\n' "${module_version}" "$(fm_icon_path "${FM_PWD}")"
+    buf+="${line}"
 
     # 工具栏（记录点击区域）
     FM_TOOLBAR_BOXES=()
     local tb_id=(back up ref new srch bm tree copy cut paste ren del quit)
     local tb_lb=("返回" "上级" "刷新" "新建" "搜索" "书签" "目录树" "复制" "剪切" "粘贴" "改名" "删除" "退出")
     local col=1 w
-    printf '\e[44;37m'
+    printf -v line '\e[44;37m'
+    buf+="${line}"
     for ((i = 0; i < ${#tb_id[@]}; i++)); do
         w=$(fm_str_w "[${tb_lb[$i]}]")
         FM_TOOLBAR_BOXES+=("${col}|${w}|${tb_id[$i]}")
-        printf '[%s] ' "${tb_lb[$i]}"
+        printf -v line '[%s] ' "${tb_lb[$i]}"
+        buf+="${line}"
         col=$(( col + w + 1 ))
     done
-    printf '\e[0m\e[K\n'
+    printf -v line '\e[0m\e[K\n'
+    buf+="${line}"
 
     # 表头（与列表列宽对齐：名称列占 cols-28，右侧为大小/权限）
     local hdr_budget=$(( cols - 28 ))
     (( hdr_budget < 10 )) && hdr_budget=10
-    printf '\e[33m  %-*s%s\e[0m\e[K\n' "$(( hdr_budget - 2 ))" "名称" " 大小 权限"
+    printf -v line '\e[33m  %-*s%s\e[0m\e[K\n' "$(( hdr_budget - 2 ))" "名称" " 大小 权限"
+    buf+="${line}"
 
     # 文件列表窗口
     local idx item type rest name full prefix p size perm mtime name_disp
     for ((r = 0; r < FM_WINH; r++)); do
         idx=$(( FM_OFFSET + r ))
-        printf '\e[%d;1H\e[K' $(( 4 + r ))
+        printf -v line '\e[%d;1H\e[K' $(( 4 + r ))
+        buf+="${line}"
         (( idx >= FM_LEN )) && continue
         item="${FM_LIST[$idx]}"
         type="${item%%|*}"; rest="${item#*|}"; name="${rest%%|*}"; full="${rest#*|}"
@@ -324,13 +333,15 @@ fm_render() {
             name_disp="$(fm_str_clip "${name_disp}" "${budget}")"
         fi
         if [[ "${type}" == "D" ]]; then
-            printf '\e[36m%s %s\e[0m\e[K\n' "${prefix}" "${name_disp}"
+            printf -v line '\e[36m%s %s\e[0m\e[K\n' "${prefix}" "${name_disp}"
+            buf+="${line}"
         else
             local meta=""
             [[ -n "${size}" || -n "${perm}" ]] && meta="${size} ${perm}"
             local pad=$(( cols - 2 - $(fm_str_w "${name_disp}") - $(fm_str_w "${meta}") - 2 ))
             (( pad < 1 )) && pad=1
-            printf '\e[32m%s %s\e[0m%*s\e[90m%s\e[0m\e[K\n' "${prefix}" "${name_disp}" "${pad}" "" "${meta}"
+            printf -v line '\e[32m%s %s\e[0m%*s\e[90m%s\e[0m\e[K\n' "${prefix}" "${name_disp}" "${pad}" "" "${meta}"
+            buf+="${line}"
         fi
     done
 
@@ -339,14 +350,20 @@ fm_render() {
     if [[ -n "${FM_CLIP_MODE}" && ${#FM_CLIP_LIST[@]} -gt 0 ]]; then
         clip_txt="剪贴板: ${FM_CLIP_MODE} ${#FM_CLIP_LIST[@]} 项"
     fi
-    printf '\e[%d;1H\e[K\e[30;47m %s │ %s │ %s\e[0m' $(( rows - 1 )) "${clip_txt}" "${marked_txt}" "${FM_STATUS_MSG}"
+    printf -v line '\e[%d;1H\e[K\e[30;47m %s │ %s │ %s\e[0m' $(( rows - 1 )) "${clip_txt}" "${marked_txt}" "${FM_STATUS_MSG}"
+    buf+="${line}"
     FM_STATUS_MSG=""
 
     # 帮助行
-    printf '\e[%d;1H\e[K\e[90m ↑↓选择 Enter/双击打开 ←返回 Space多选 c复制 x剪切 v粘贴 d删除 a操作 n新建 f搜索 b书签 t目录树 q退出\e[0m' "${rows}"
+    printf -v line '\e[%d;1H\e[K\e[90m ↑↓选择 Enter/双击打开 ←返回 Space多选 c复制 x剪切 v粘贴 d删除 a操作 n新建 f搜索 b书签 t目录树 q退出\e[0m' "${rows}"
+    buf+="${line}"
 
     # 光标放回当前行
-    printf '\e[%d;1H' $(( 4 + FM_CURSOR - FM_OFFSET ))
+    printf -v line '\e[%d;1H' $(( 4 + FM_CURSOR - FM_OFFSET ))
+    buf+="${line}"
+
+    # 一次性输出整屏
+    printf '%s' "${buf}"
 }
 
 # ------------------------------------------------------------
@@ -782,11 +799,17 @@ fm_operate_single() {
 }
 
 # ============================================================
-# 操作菜单（对当前目录中的文件）
+# 操作菜单（对当前选中文件；无选中文件时触发各自交互选择）
 # ============================================================
 fm_action_menu() {
+    local full=""
+    full=$(fm_cur_full)
+    [[ -f "${full}" ]] || full=""   # 仅文件参与单文件操作
     echo ""
     echo "  ${COLOR_BOLD}文件操作菜单（当前目录: $(fm_icon_path "${FM_PWD}")）${COLOR_RESET}"
+    if [[ -n "${full}" ]]; then
+        echo "  ${COLOR_GRAY}当前选中: $(basename "${full}")${COLOR_RESET}"
+    fi
     echo "  ${COLOR_GRAY}------------------------------------------------${COLOR_RESET}"
     echo "  1. 查看文件内容    2. 编辑文件        3. 复制文件"
     echo "  4. 移动文件        5. 重命名          6. 删除文件"
@@ -796,13 +819,13 @@ fm_action_menu() {
     echo "  ${COLOR_GRAY}------------------------------------------------${COLOR_RESET}"
     read_input act "选择操作" ""
     case "${act}" in
-        1) fm_view_file "" ;;
-        2) fm_edit_file "" ;;
-        3) fm_copy_file "" ;;
-        4) fm_move_file "" ;;
-        5) fm_rename_file "" ;;
-        6) fm_delete_file "" ;;
-        7) fm_chmod_file "" ;;
+        1) fm_view_file "${full}" ;;
+        2) fm_edit_file "${full}" ;;
+        3) fm_copy_file "${full}" ;;
+        4) fm_move_file "${full}" ;;
+        5) fm_rename_file "${full}" ;;
+        6) fm_delete_file "${full}" ;;
+        7) fm_chmod_file "${full}" ;;
         8) fm_mkdir_prompt ;;
         9) fm_touch_prompt ;;
         a) fm_compress_prompt ;;
@@ -886,24 +909,45 @@ fm_view_file() {
 }
 
 # ------------------------------------------------------------
-# 2. 编辑文件（nano 优先，vi 回退）
-# 参数：$1 完整路径（空=交互选择）
+# 2. 编辑文件（回退链：nano → vim → vi → ed，环境均有则用第一个可用）
+# 参数：$1 完整路径（空=优先当前选中文件，否则交互选择）
+# 说明：调用方经 fm_tui_do 执行（临时退出备用屏再重进），避免全屏编辑器
+#       与文件管理器备用屏叠加导致黑屏/错乱。编辑器缺失或异常(rc>=2)时
+#       自动切换下一个可用编辑器；0/1/130 视为用户正常完成（保存/放弃/中断）。
 # ------------------------------------------------------------
 fm_edit_file() {
     local full="$1"
-    [[ -z "${full}" ]] && { full="$(fm_pick_file "编辑哪个文件")"; }
-    [[ -z "${full}" ]] && return
-    [[ -f "${full}" ]] || { log_error "不是文件"; return; }
-    if check_command nano; then
-        nano "${full}"
-    elif check_command vi; then
-        vi "${full}"
-    else
-        log_error "未找到 nano/vi 编辑器"
-        return
+    if [[ -z "${full}" ]]; then
+        full=$(fm_cur_full)
+        [[ -f "${full}" ]] || full="$(fm_pick_file "编辑哪个文件")"
     fi
-    log_success "编辑完成: ${full}"
-    audit_log "编辑文件 ${full}" "成功"
+    [[ -z "${full}" ]] && return
+    [[ -f "${full}" ]] || { log_error "不是文件: ${full}"; return; }
+
+    local ed="" rc=0 tried=()
+    for ed in nano vim vi ed; do
+        check_command "${ed}" || continue
+        tried+=("${ed}")
+        # if 条件吸收退出码：编辑器异常退出时不被 set -e 中断，可继续回退
+        rc=0
+        if command "${ed}" "${full}"; then
+            rc=0
+        else
+            rc=$?
+        fi
+        if (( rc == 0 || rc == 1 || rc == 130 )); then
+            log_success "编辑完成: ${full}（${ed}）"
+            audit_log "编辑文件 ${full}" "成功"
+            return 0
+        fi
+        log_warning "${ed} 编辑异常(rc=${rc})，尝试下一个编辑器..."
+    done
+    if (( ${#tried[@]} == 0 )); then
+        log_error "未找到可用编辑器（nano/vim/vi/ed），请安装 nano 后重试"
+    else
+        log_error "所有编辑器均未能完成编辑: ${tried[*]}"
+    fi
+    return 1
 }
 
 # ------------------------------------------------------------
