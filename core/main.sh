@@ -3,7 +3,7 @@
 # 文件：core/main.sh
 # 功能：主程序入口（主菜单调度核心）
 # 作者：zc 团队
-# 版本：1.5.4
+# 版本：1.5.5
 # 日期：2026-08-05
 # 说明：加载核心库 → 环境检查 → 锁检查 → 扫描模块/插件 → 双协议调度
 #   （默认 CLI：--help/--version/--list/--run/--backup；--tui 进入交互界面）
@@ -244,10 +244,24 @@ run_module_noninteractive() {
 # ------------------------------------------------------------
 main_loop() {
     local choice
+    _TUI_PAGE=0
     while true; do
         show_main_menu
         choice=$(get_user_choice $(( ${#MODULE_NAMES[@]} + ${#PLUGIN_NAMES[@]} )))
         [[ "${choice}" == "q" ]] && break
+        # 主页分页：滚轮/PageUp/PageDown 翻页（重新渲染当前页）
+        if [[ "${choice}" == "PGDN" ]]; then
+            local tot=$(( ${#MODULE_NAMES[@]} + ${#PLUGIN_NAMES[@]} ))
+            local psz="${_TUI_PAGE_SIZE:-12}"
+            local pg=$(( (tot + psz - 1) / psz ))
+            (( pg < 1 )) && pg=1
+            (( _TUI_PAGE < pg - 1 )) && _TUI_PAGE=$(( _TUI_PAGE + 1 ))
+            continue
+        fi
+        if [[ "${choice}" == "PGUP" ]]; then
+            (( _TUI_PAGE > 0 )) && _TUI_PAGE=$(( _TUI_PAGE - 1 ))
+            continue
+        fi
         if (( choice >= 1 && choice <= ${#MODULE_NAMES[@]} )); then
             show_sub_menu $((choice - 1))
         else

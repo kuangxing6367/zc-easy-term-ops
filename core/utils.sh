@@ -316,7 +316,7 @@ fm_str_w() {
     local LC_ALL=C
     len=${#s}
     while (( i < len )); do
-        byte=$(printf '%d' "'${s:i:1}")
+        printf -v byte '%d' "'${s:i:1}"
         if (( byte < 0x80 )); then
             n=$((n + 1)); i=$((i + 1))
         else
@@ -350,7 +350,7 @@ fm_str_clip() {
     local LC_ALL=C
     len=${#s}
     while (( i < len )); do
-        byte=$(printf '%d' "'${s:i:1}")
+        printf -v byte '%d' "'${s:i:1}"
         if (( byte < 0x80 )); then
             clen=1; cw=1
         else

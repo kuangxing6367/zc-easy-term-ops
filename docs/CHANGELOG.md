@@ -2,6 +2,24 @@
 
 本文件记录 zc-easy-term-ops（ZETOPS）的版本更新历史。
 
+## [1.5.5] - 2026-09-01
+
+### 修复（主页分页点击 / 文件管理器渲染提速 / 间距优化）
+
+- **主页改为单列分页（core/menu.sh）**
+  - 主菜单 26 模块+插件不再双列挤一屏，改为**单列 + 分页**：每项单独一行、点击命中区更大更准（"字体搞开一点点击更准确"）
+  - 每页数量按终端行数自适应（`stty rows - 11`），并采用精简页眉（1 行品牌 + 1 行系统信息），**保证每页内容不超一屏、不发生终端滚动**——彻底根治"主页第 2 屏点不动 / 只有个别能点"（滚动校准在多终端仍不可靠，分页从机制上消除滚动）
+  - **滚轮上/下 与 PageUp/PageDown 翻页**（`_tui_read_event` 保留 SGR 滚轮事件 64/65，其余鼠标指针仍丢弃）；页码显示"第 x/y 页"
+  - `main_loop` 处理 PGDN/PGUP 翻页重绘
+- **文件管理器渲染提速（modules/20_file_manager.sh + core/utils.sh）**
+  - `fm_refresh_list`：4 个 glob 循环里的 `$(basename ...)`（每文件一次外部命令）改为纯 bash `${var##*/}`；批量 `stat` 一次取全目录大小/权限存入关联数组 `FM_STAT_CACHE`，`fm_render` 直接读缓存（大目录每文件 stat N 次 → 1 次）
+  - `fm_human_size`：由每文件一次 `awk` 改为纯 bash 整数运算（G/M/K/B 换算）
+  - `fm_str_w`/`fm_str_clip`：逐字节 `$(printf)` 命令替换改 `printf -v` 内建，消除每字符子 shell 开销
+  - 实测（Windows 模拟层、200+ 文件目录）：刷新 9s→0s、渲染 24s→3s；Linux 服务器上收益更显著
+- **修复 `FM_STAT_CACHE` 关联数组声明（modules/20_file_manager.sh）**：普通数组 `=()` 初始化导致字符串下标触发算术求值报错，改为模块顶层 `declare -A` 全局关联数组
+- **渲染函数读 tty 增加真实终端守卫（core/menu.sh）**：`show_main_menu_render`/`_tui_finalize_rows` 的 `stty size < /dev/tty` 加 `[[ -t 1 ]]` 判断，重定向/子 shell 下不再阻塞
+- **自动化测试（tests/run_tests.sh）**：新增单列分页渲染/边界/越界修正断言、滚轮翻页断言（116/116 通过）
+
 ## [1.5.4] - 2026-08-31
 
 ### 修复（鼠标事件健壮性 / 渲染窗口 / 文件编辑）

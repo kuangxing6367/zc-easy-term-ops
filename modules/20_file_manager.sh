@@ -20,7 +20,7 @@ set -euo pipefail
 
 module_name="文件管理器"
 module_short="file_manager"
-module_version="2.2.0"
+module_version="2.3.0"
 
 FM_BOOKMARKS="${FM_BOOKMARKS:-${HOME}/.zetops/fm_bookmarks}"
 FM_CLIPBOARD="${FM_CLIPBOARD:-${HOME}/.zetops/fm_clipboard}"
@@ -40,6 +40,7 @@ FM_STATUS_MSG=""    # 一次性状态消息
 FM_QUIT=0           # 退出标志（工具栏点击）
 FM_DBL_ROW=-1       # 双击检测：上次点击行
 FM_DBL_TIME=0       # 双击检测：上次点击时间
+declare -A FM_STAT_CACHE  # 批量 stat 缓存（full路径 -> "size|perm"），全局关联数组
 
 module_description() {
     echo "TUI 文件管理器：鼠标点击、工具栏、复制/剪切/粘贴剪贴板、目录导航 [File Manager TUI]"
@@ -202,16 +203,16 @@ fm_read_sgr() {
 fm_refresh_list() {
     local d f d_entries=() f_entries=() sd=()
     for d in "${FM_PWD}"/.[!.]* "${FM_PWD}"/..?*; do
-        [[ -d "${d}" ]] && d_entries+=("D|$(basename "${d}")|${d}")
+        [[ -d "${d}" ]] && d_entries+=("D|${d##*/}|${d}")
     done 2>/dev/null || true
     for f in "${FM_PWD}"/.[!.]* "${FM_PWD}"/..?*; do
-        [[ -f "${f}" ]] && f_entries+=("F|$(basename "${f}")|${f}")
+        [[ -f "${f}" ]] && f_entries+=("F|${f##*/}|${f}")
     done 2>/dev/null || true
     for d in "${FM_PWD}"/*; do
-        [[ -d "${d}" ]] && d_entries+=("D|$(basename "${d}")|${d}")
+        [[ -d "${d}" ]] && d_entries+=("D|${d##*/}|${d}")
     done 2>/dev/null || true
     for f in "${FM_PWD}"/*; do
-        [[ -f "${f}" ]] && f_entries+=("F|$(basename "${f}")|${f}")
+        [[ -f "${f}" ]] && f_entries+=("F|${f##*/}|${f}")
     done 2>/dev/null || true
 
     FM_LIST=()
@@ -231,6 +232,17 @@ fm_refresh_list() {
         FM_LIST+=("${sd[@]}")
     fi
     FM_LEN=${#FM_LIST[@]}
+
+    # 批量 stat：一次外部命令取当前目录全部文件的大小/权限，存入缓存，
+    # fm_render 直接读缓存，避免大目录下每文件一次 stat（渲染提速关键）
+    FM_STAT_CACHE=()
+    if (( FM_LEN > 0 )); then
+        local _p=""
+        while IFS=$'\t' read -r _p _sz _pm; do
+            [[ -z "${_p}" ]] && continue
+            FM_STAT_CACHE["${_p}"]="${_sz:-0}|${_pm:-?}"
+        done < <(stat -c $'%n\t%s\t%A' "${FM_PWD}"/* 2>/dev/null || true)
+    fi
 
     # 光标/窗口越界修正
     if (( FM_LEN > 0 )); then
@@ -318,9 +330,15 @@ fm_render() {
         done
         size=""; perm=""
         if [[ "${type}" == "F" ]]; then
-            # 单次 stat 同时取大小与权限，避免每个文件两次系统调用（大目录渲染提速）
-            local _sz _pm
-            read -r _sz _pm < <(stat -c '%s %A' "${full}" 2>/dev/null || true)
+            # 从批量 stat 缓存取大小/权限（无缓存才回退单次 stat）
+            local _sz _pm cval=""
+            cval="${FM_STAT_CACHE[${full}]:-}"
+            if [[ -n "${cval}" ]]; then
+                _sz="${cval%%|*}"; _pm="${cval#*|}"
+            else
+                read -r _sz _pm < <(stat -c '%s %A' "${full}" 2>/dev/null || true)
+                _sz="${_sz:-0}"; _pm="${_pm:-?}"
+            fi
             _sz="${_sz:-0}"; _pm="${_pm:-?}"
             size=$(fm_human_size "${_sz}")
             perm="${_pm}"
@@ -716,6 +734,7 @@ fm_main() {
     FM_MARKED=(); FM_CLIP_MODE=""; FM_CLIP_LIST=()
     FM_TOOLBAR_BOXES=(); FM_STATUS_MSG=""; FM_QUIT=0
     FM_DBL_ROW=-1; FM_DBL_TIME=0
+    FM_STAT_CACHE=()
 
     fm_tui_enter
     while (( FM_QUIT == 0 )); do
@@ -754,17 +773,25 @@ fm_icon_path() {
 # 人类可读大小
 # 参数：$1 字节数
 # ------------------------------------------------------------
+# 纯 bash 字节数转人类可读（避免每文件一次 awk 外部命令——大目录渲染提速关键）
+# 参数：$1 字节数
+# 输出：如 "1.5G" / "234K" / "100B"
+# ------------------------------------------------------------
 fm_human_size() {
-    local b="$1"
+    local b="$1" div=1 unit="B" whole=0 frac=0
     if (( b >= 1073741824 )); then
-        awk -v n="${b}" 'BEGIN{printf "%.1fG", n/1073741824}'
+        div=1073741824; unit="G"
     elif (( b >= 1048576 )); then
-        awk -v n="${b}" 'BEGIN{printf "%.1fM", n/1048576}'
+        div=1048576; unit="M"
     elif (( b >= 1024 )); then
-        awk -v n="${b}" 'BEGIN{printf "%.1fK", n/1024}'
+        div=1024; unit="K"
     else
-        echo "${b}B"
+        printf '%sB' "${b}"
+        return 0
     fi
+    whole=$(( b / div ))
+    frac=$(( (b % div) * 10 / div ))
+    printf '%d.%d%s' "${whole}" "${frac}" "${unit}"
 }
 
 # ------------------------------------------------------------

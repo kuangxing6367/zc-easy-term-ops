@@ -83,7 +83,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.4"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.5"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -136,12 +136,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.5.4)"
+echo "[4] 版本一致性 (1.5.5)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.5.4" "${VER_CFG}"
-check_eq "conf.example 版本" "1.5.4" "${VER_EXAMPLE}"
-grep -q "## \[1.5.4\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.4]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.4]"; }
+check_eq "config.sh 版本" "1.5.5" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.5" "${VER_EXAMPLE}"
+grep -q "## \[1.5.5\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.5]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.5]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -247,22 +247,21 @@ out=$(echo "y" | ai_tool_dispatch run_command "{\"command\":\"touch ${TMPDIR_TES
 [[ -e "${TMPDIR_TEST}/exec_test" ]] && { PASS=$((PASS + 1)); echo "  PASS: 确认流 y 执行成功"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: 确认流 y 未执行 [${out}]"; }
 
 echo ""
-echo "[10] 菜单渲染与鼠标映射"
+echo "[10] 菜单渲染与鼠标映射（单列分页）"
 _TUI_OPT_ROW_OPT=()
 for f in "${ZETOPS_ROOT}"/modules/*.sh; do register_module "$f"; done
 for f in "${ZETOPS_ROOT}"/plugins/*.sh; do register_plugin "$f"; done
+_TUI_PAGE=0; _TUI_PAGE_SIZE=12
 _tui_capture _ui_module_list >"${TMPDIR_TEST}/grid" 2>/dev/null
-check_contains "主菜单网格渲染" "$(cat "${TMPDIR_TEST}/grid")" "系统初始化与优化"
-check_contains "主菜单网格渲染(右列)" "$(cat "${TMPDIR_TEST}/grid")" "安全基线加固"
-check_eq "鼠标左列映射 row0" "1" "$(_tui_row_to_opt 0 10)"
-check_eq "鼠标右列映射 row0" "14" "$(_tui_row_to_opt 0 50)"
+check_contains "第1页渲染含第一项" "$(cat "${TMPDIR_TEST}/grid")" "系统初始化与优化"
+# 单列分页：第1页最多 _TUI_PAGE_SIZE 项，第14项在第二页
+_TUI_PAGE=1
+_tui_capture _ui_module_list >"${TMPDIR_TEST}/grid" 2>/dev/null
+check_contains "第2页渲染含第14项" "$(cat "${TMPDIR_TEST}/grid")" "安全基线加固"
+check_eq "单列 row0 归选项1" "1" "$(_tui_row_to_opt 0 10)"
+check_eq "单列 row0 不分左右" "1" "$(_tui_row_to_opt 0 50)"
 check_eq "鼠标越界行返回空" "" "$(_tui_row_to_opt 999 10)"
-# 双列网格右列起始列：渲染时左列占 _TUI_LCOL_W=22 列，右列从 _TUI_RIGHT_COL=30 开始；
-# 点击分界必须与渲染列一致（旧硬编码 col<40 会让 14-27 右列点不到）
-_TUI_LCOL_W=22
-_TUI_RIGHT_COL=30
-check_eq "双列分界 col29 归左列" "1" "$(_tui_row_to_opt 0 29)"
-check_eq "双列分界 col30 归右列" "14" "$(_tui_row_to_opt 0 30)"
+_TUI_PAGE=0
 check_eq "键盘输入 0" "0" "$(echo '0' | get_user_choice 26 2>/dev/null)"
 check_eq "键盘输入 q" "q" "$(echo 'q' | get_user_choice 26 2>/dev/null)"
 check_eq "非法输入回退" "5" "$(printf 'abc\n5\n' | get_user_choice 26 2>/dev/null)"
@@ -300,6 +299,11 @@ printf 'mouse:0,1,10\nmouse:3,1,10\n' > "${EV_FILE_T}"
 check_eq "仅一次点击不进入(返回q)" "q" "$(get_user_choice 26 2>/dev/null)"
 printf 'line:7\n' > "${EV_FILE_T}"
 check_eq "键盘数字直接进入" "7" "$(get_user_choice 26 2>/dev/null)"
+# 滚轮翻页：下滚返回 PGDN，上滚返回 PGUP（由主循环翻页重绘）
+printf 'mouse:65,1,10\n' > "${EV_FILE_T}"
+check_eq "滚轮下翻返回PGDN" "PGDN" "$(get_user_choice 26 2>/dev/null)"
+printf 'mouse:64,1,10\n' > "${EV_FILE_T}"
+check_eq "滚轮上翻返回PGUP" "PGUP" "$(get_user_choice 26 2>/dev/null)"
 eval "${_tui_read_event_real}"
 rm -f "${EV_FILE_T}" "${EV_FILE_T}.tmp"
 
@@ -318,7 +322,9 @@ check_eq "SGR 移动事件丢弃" "none" "${r}"
 r=$(printf '\033[<35;10;5M' | { _tui_read_event stdin 2>/dev/null; })
 check_eq "SGR 拖拽事件丢弃" "none" "${r}"
 r=$(printf '\033[<64;10;5M' | { _tui_read_event stdin 2>/dev/null; })
-check_eq "SGR 滚轮事件丢弃" "none" "${r}"
+check_eq "SGR 滚轮保留(翻页)" "mouse:64,10,5" "${r}"
+r=$(printf '\033[<65;10;5M' | { _tui_read_event stdin 2>/dev/null; })
+check_eq "SGR 滚轮下保留" "mouse:65,10,5" "${r}"
 # 控制字符（序列残留/功能键）不回显，不进入普通输入
 r=$(printf '\x01' | { _tui_read_event stdin 2>/dev/null; })
 check_eq "控制字符丢弃" "none" "${r}"

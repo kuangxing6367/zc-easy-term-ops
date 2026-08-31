@@ -218,7 +218,11 @@ _tui_finalize_rows() {
     # DSR 依赖终端响应，XShell/部分终端响应慢或格式异常会导致校准错误（"某排点不动"）。
     # 主菜单渲染后光标停在最后一行：内容未滚动时在内容末行 n，
     # 内容滚动后停在屏幕最后可见行 rows → r = min(n, rows)。
-    rows=$(stty size < /dev/tty 2>/dev/null | awk '{print $1}')
+    # 仅在真实终端读取 stty，避免重定向/子 shell 下 < /dev/tty 阻塞
+    rows=0
+    if [[ -t 1 ]]; then
+        rows=$(stty size < /dev/tty 2>/dev/null | awk '{print $1}')
+    fi
     rows=${rows:-0}
     [[ "${rows}" =~ ^[0-9]+$ ]] || rows=0
     if (( rows > 0 && n > rows )); then
@@ -410,9 +414,13 @@ _tui_read_event() {
                 local body="${seq%[Mm]}" term="${seq: -1}"
                 IFS=';' read -r btn x y <<< "${body}"
                 if [[ "${btn}" =~ ^[0-9]+$ ]] && [[ "${x}" =~ ^[0-9]+$ ]] && [[ "${y}" =~ ^[0-9]+$ ]]; then
-                    # 丢弃鼠标指针信息：移动/悬停/拖拽/滚轮等（btn>=32）不产生输入，
-                    # 防止其转义序列被当普通文本回显
+                    # 丢弃鼠标指针信息：移动/悬停/拖拽等（btn>=32）不产生输入，
+                    # 防止其转义序列被当普通文本回显；滚轮(64/65)保留用于主页翻页
                     if (( btn >= 32 )); then
+                        if (( btn == 64 || btn == 65 )); then
+                            printf 'mouse:%d,%d,%d' "${btn}" "${x}" "${y}"
+                            return 0
+                        fi
                         echo "none"
                         return 1
                     fi
@@ -531,7 +539,18 @@ get_user_choice() {
                 ;;
             mouse:*)
                 IFS=',' read -r btn x y <<< "${ev#mouse:}"
-                # 仅响应左键按下（btn==0；释放/滚轮/拖拽忽略）
+                # 滚轮：上(64)翻上一页，下(65)翻下一页（返回特殊值由主循环处理）
+                if (( btn == 64 || btn == 65 )); then
+                    _tui_mouse_off "${mouse}"
+                    _TUI_SELECTED=""
+                    if (( btn == 64 )); then
+                        echo "PGUP"
+                    else
+                        echo "PGDN"
+                    fi
+                    return 0
+                fi
+                # 仅响应左键按下（btn==0；释放/拖拽忽略）
                 if (( btn == 0 )); then
                     opt=$(_tui_row_to_opt "${y}" "${x}")
                     if [[ -n "${opt}" ]] && (( opt >= 0 && opt <= max )); then
@@ -585,7 +604,36 @@ EOF
     fi
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.4} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.5} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_nl
+}
+
+# ------------------------------------------------------------
+# 精简页眉（分页主页用：1 行品牌，省出屏幕空间给菜单，保证每页不滚动 → 点击精确）
+# 参数：无
+# ------------------------------------------------------------
+_ui_banner_compact() {
+    _tui_line "  ${COLOR_BOLD}${COLOR_BLUE}ZETOPS${COLOR_RESET} ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维工具箱${COLOR_RESET}  ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.5} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_nl
+}
+
+# ------------------------------------------------------------
+# 精简系统概览（分页主页用：1 行关键信息）
+# 参数：无
+# ------------------------------------------------------------
+_ui_sysinfo_compact() {
+    local os="" krn="" cores="" mem="" disk="" host="" ip=""
+    os=$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' || true)
+    [[ -z "${os}" ]] && os=$(head -1 /etc/redhat-release 2>/dev/null || true)
+    [[ -z "${os}" ]] && os="Linux"
+    krn=$(uname -r 2>/dev/null || true)
+    cores=$(nproc 2>/dev/null || true)
+    mem=$(free -h 2>/dev/null | awk '/Mem:/{print $3"/"$2}' || true)
+    disk=$(df -h / 2>/dev/null | awk 'NR==2{print $5" ("$3"/"$2")"}' || true)
+    host=$(hostname 2>/dev/null || true)
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+    [[ -z "${ip}" ]] && ip="N/A"
+    _tui_line "  ${COLOR_GRAY}OS: ${os:-?}  Kernel: ${krn:-?}  CPU: ${cores:-?}核  内存: ${mem:-N/A}  磁盘/: ${disk:-N/A}  主机: ${host:-?} (${ip})${COLOR_RESET}"
     _tui_nl
 }
 
@@ -612,33 +660,35 @@ _ui_sysinfo() {
 }
 
 # ------------------------------------------------------------
-# 模块双列网格（按显示宽度对齐，右列起始列固定为 _TUI_RIGHT_COL）
+# 模块/插件单列分页列表（每页 _TUI_PAGE_SIZE 项，一屏内不滚动 → 点击精确）
 # 参数：无
-# 说明：左列布局 = 2 空格 + "NN." + 空格 + 名称(≤_TUI_LCOL_W 列) + 2 空格
-#       → 右列起始列 = 2 + 3 + 1 + _TUI_LCOL_W + 2 = _TUI_RIGHT_COL
+# 说明：选项号为全局编号（模块 1..N，插件 N+1..）；滚轮/PageUp/PageDown 翻页
 # ------------------------------------------------------------
 _ui_module_list() {
     local n=${#MODULE_NAMES[@]}
-    local half=$(( (n + 1) / 2 ))
-    local lcol_w="${_TUI_LCOL_W:-22}"
-    local i
-    for ((i = 0; i < half; i++)); do
-        local j=$((i + half))
-        local left="  ${COLOR_BOLD}$(printf '%2d.' "$((i + 1))")${COLOR_RESET} "
-        local lname="${MODULE_NAMES[$i]}"
-        if (( $(fm_str_w "${lname}") > lcol_w )); then
-            lname="$(fm_str_clip "${lname}" "${lcol_w}")"
-        fi
-        local lpad=$(( lcol_w - $(fm_str_w "${lname}") ))
-        (( lpad < 0 )) && lpad=0
-        printf '%s%s%*s' "${left}" "${lname}" "${lpad}" ""
-        if (( j < n )); then
-            printf '  %2d. %s\n' "$((j + 1))" "${MODULE_NAMES[$j]}"
+    local pn=${#PLUGIN_NAMES[@]}
+    local total=$(( n + pn ))
+    local page="${_TUI_PAGE:-0}"
+    local psize="${_TUI_PAGE_SIZE:-12}"
+    (( psize < 4 )) && psize=4
+    local start_i=$(( page * psize ))
+    if (( start_i >= total )); then
+        local lastpg=$(( (total + psize - 1) / psize - 1 ))
+        (( lastpg < 0 )) && lastpg=0
+        start_i=$(( lastpg * psize ))
+    fi
+    local end_i=$(( start_i + psize ))
+    (( end_i > total )) && end_i="${total}"
+    local i idx=0
+    for ((i = start_i; i < end_i; i++)); do
+        idx=$(( i + 1 ))
+        if (( i < n )); then
+            echo "  ${COLOR_BOLD}$(printf '%2d.' "${idx}")${COLOR_RESET} ${MODULE_NAMES[$i]}"
         else
-            printf '\n'
+            echo "  ${COLOR_BOLD}$(printf '%2d.' "${idx}")${COLOR_RESET} ${COLOR_GRAY}[插件]${COLOR_RESET} ${PLUGIN_NAMES[$(( i - n ))]}"
         fi
     done
-    if (( n == 0 )); then
+    if (( total == 0 )); then
         echo "  ${COLOR_YELLOW}（未加载任何模块）${COLOR_RESET}"
     fi
 }
@@ -666,18 +716,35 @@ _ui_plugins() {
 show_main_menu_render() {
     _tui_clear
     _TUI_OPT_ROW_OPT=()
-    _TUI_LCOL_W=22
-    _TUI_RIGHT_COL=30
     # 缓冲模式：整屏拼成大字符串，末尾一次性 printf（缩短渲染窗口，防鼠标事件堆积）
     _TUI_BUF_ON=1; _TUI_RENDER_BUF=""
-    _ui_banner
-    _ui_sysinfo
+    # 分页大小自适应终端高度：每页内容保证不超一屏（不滚动 → 点击精确命中）
+    _TUI_PAGE_SIZE=12
+    local _fm_rows=0
+    # 仅在真实终端（stdout 是 tty）时用 stty 自适应页大小；重定向/子 shell 下跳过，
+    # 避免无控制终端时 < /dev/tty 阻塞，同时保证真终端下每页不超一屏
+    if [[ -t 1 ]]; then
+        _fm_rows=$(stty size < /dev/tty 2>/dev/null | awk '{print $1}')
+    fi
+    _fm_rows=${_fm_rows:-0}
+    [[ "${_fm_rows}" =~ ^[0-9]+$ ]] || _fm_rows=0
+    if (( _fm_rows >= 22 )); then
+        # 每页内容保证不超一屏：精简页眉+分隔+页码+提示固定开销约 11 行
+        _TUI_PAGE_SIZE=$(( _fm_rows - 11 ))
+    fi
+    (( _TUI_PAGE_SIZE < 4 )) && _TUI_PAGE_SIZE=4
+    _ui_banner_compact
+    _ui_sysinfo_compact
     _tui_hr
     _tui_nl
     _tui_capture _ui_module_list
-    _tui_capture _ui_plugins
     _tui_nl
     _tui_hr
+    # 页码提示
+    local _fm_total=$(( ${#MODULE_NAMES[@]} + ${#PLUGIN_NAMES[@]} ))
+    local _fm_pages=$(( (_fm_total + _TUI_PAGE_SIZE - 1) / _TUI_PAGE_SIZE ))
+    (( _fm_pages < 1 )) && _fm_pages=1
+    _tui_line "  ${COLOR_GRAY}第 $(( ${_TUI_PAGE:-0} + 1 ))/${_fm_pages} 页    （滚轮 或 PageUp/PageDown 翻页）${COLOR_RESET}"
     _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}q${COLOR_RESET}. 退出    ${COLOR_GRAY}点击菜单项 = 选中（高亮），再次点击同一项 = 确认进入；数字回车 = 直接进入${COLOR_RESET}"
     _tui_nl
     _TUI_BUF_ON=0
