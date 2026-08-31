@@ -109,9 +109,9 @@ fi
 # ------------------------------------------------------------
 # 2. 检查并安装必需依赖
 # ------------------------------------------------------------
-install_echo "检查必需依赖（awk/sed/grep/curl/wget/git/tput/rsync ...）..."
+install_echo "检查必需依赖（awk/sed/grep/curl/wget/tput/rsync ...）..."
 NEED_INSTALL=()
-for c in awk sed grep date dirname git; do
+for c in awk sed grep date dirname; do
     command -v "${c}" >/dev/null 2>&1 || NEED_INSTALL+=("${c}")
 done
 # 网络工具：curl 或 wget 至少其一
@@ -182,46 +182,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install_echo "安装目录: ${INSTALL_PREFIX}"
 mkdir -p "${INSTALL_PREFIX}"
 
-# 检测是否为"单文件下载"模式（源目录缺少核心文件时自动克隆完整仓库）
-if [[ ! -d "${SCRIPT_DIR}/core" || ! -f "${SCRIPT_DIR}/zetops" ]]; then
-    install_echo "检测到单文件下载模式，自动克隆完整仓库 ..."
-    TMP_CLONE="/tmp/zetops_install_$$"
-    rm -rf "${TMP_CLONE}"
-    # 尝试直接克隆，失败则尝试国内镜像
-    if ! git clone --depth 1 https://github.com/kuangxing6367/zc-easy-term-ops.git "${TMP_CLONE}" 2>/dev/null; then
-        install_echo "GitHub 直连失败，尝试 Gitee 镜像 ..."
-        git clone --depth 1 https://gitee.com/kuangxing6367/zc-easy-term-ops.git "${TMP_CLONE}" 2>/dev/null || {
-            install_err "克隆仓库失败，请检查网络后重试"
-            exit 1
-        }
-    fi
-    SCRIPT_DIR="${TMP_CLONE}"
-fi
-
 if [[ "${SCRIPT_DIR}" == "${INSTALL_PREFIX}" ]]; then
     install_echo "已在安装目录中，跳过复制"
 else
     install_echo "复制项目文件到 ${INSTALL_PREFIX} ..."
     if command -v rsync >/dev/null 2>&1; then
-        rsync -a --exclude '.git' --exclude 'install.sh' \
+        rsync -a --exclude '.git' --exclude 'install.sh' --exclude 'install-online.sh' \
             "${SCRIPT_DIR}/" "${INSTALL_PREFIX}/"
     else
-        (cd "${SCRIPT_DIR}" && tar cf - --exclude='./.git' --exclude='./install.sh' .) | \
+        (cd "${SCRIPT_DIR}" && tar cf - --exclude='./.git' --exclude='./install.sh' --exclude='./install-online.sh' .) | \
             (cd "${INSTALL_PREFIX}" && tar xf -)
     fi
-fi
-
-# 清理临时克隆目录
-[[ -d "${TMP_CLONE:-}" ]] && rm -rf "${TMP_CLONE}"
-
-# 验证关键文件存在
-if [[ ! -f "${INSTALL_PREFIX}/core/main.sh" ]]; then
-    install_err "核心文件 ${INSTALL_PREFIX}/core/main.sh 不存在"
-    exit 1
-fi
-if [[ ! -f "${INSTALL_PREFIX}/zetops" ]]; then
-    install_err "入口脚本 ${INSTALL_PREFIX}/zetops 不存在"
-    exit 1
 fi
 chmod -R a+rX "${INSTALL_PREFIX}"
 chmod +x "${INSTALL_PREFIX}"/core/*.sh "${INSTALL_PREFIX}"/modules/*.sh \
