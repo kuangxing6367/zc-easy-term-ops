@@ -198,25 +198,36 @@ fi
 chmod -R a+rX "${INSTALL_PREFIX}"
 chmod +x "${INSTALL_PREFIX}"/core/*.sh "${INSTALL_PREFIX}"/modules/*.sh \
          "${INSTALL_PREFIX}"/plugins/*.sh "${INSTALL_PREFIX}"/zetops 2>/dev/null || true
+
+# 验证关键文件存在
+if [[ ! -f "${INSTALL_PREFIX}/core/main.sh" ]]; then
+    install_err "核心文件 ${INSTALL_PREFIX}/core/main.sh 不存在"
+    exit 1
+fi
+if [[ ! -f "${INSTALL_PREFIX}/zetops" ]]; then
+    install_err "入口脚本 ${INSTALL_PREFIX}/zetops 不存在"
+    exit 1
+fi
 install_ok "项目文件就绪"
 
 # ------------------------------------------------------------
-# 4. 创建软链接（/usr/local/bin/zetops -> core/main.sh）
+# 4. 创建软链接（/usr/local/bin/zetops -> zetops 脚本）
 # ------------------------------------------------------------
 SYMLINK="/usr/local/bin/zetops"
-install_echo "创建软链接 ${SYMLINK} -> ${INSTALL_PREFIX}/core/main.sh"
+install_echo "创建软链接 ${SYMLINK} -> ${INSTALL_PREFIX}/zetops"
 # 先删除旧的软链接或文件
 rm -f "${SYMLINK}" 2>/dev/null || true
 # 确保目标目录存在
 mkdir -p /usr/local/bin
 # 创建软链接
-ln -sf "${INSTALL_PREFIX}/core/main.sh" "${SYMLINK}"
-chmod +x "${SYMLINK}"
+ln -sf "${INSTALL_PREFIX}/zetops" "${SYMLINK}"
 # 验证软链接
 if [[ -L "${SYMLINK}" && -f "${SYMLINK}" ]]; then
-    install_ok "软链接创建完成: $(ls -la ${SYMLINK})"
+    chmod +x "${SYMLINK}"
+    install_ok "软链接创建完成: ${SYMLINK} -> $(readlink ${SYMLINK})"
 else
-    install_err "软链接创建失败，请手动检查"
+    install_err "软链接创建失败，请手动检查: ls -la ${SYMLINK}"
+    exit 1
 fi
 
 # ------------------------------------------------------------
