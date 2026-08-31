@@ -182,7 +182,7 @@ _ord() {
 _tui_finalize_rows() {
     [[ -e /dev/tty ]] || return 0
     local n=$(( _TUI_ROW - 1 ))   # 已渲染内容总行数
-    local r=0 tries=0
+    local r=0 tries=0 rows=0
     _tty_flush
     for (( tries = 0; tries < 2; tries++ )); do
         printf '\033[6n' > /dev/tty
@@ -190,8 +190,21 @@ _tui_finalize_rows() {
         [[ "${r}" =~ ^[0-9]+$ ]] || r=0
         (( r > 0 )) && break
     done
-    # 查询失败时按"未滚动"处理（r=n → 偏移 0），不中断
-    (( r > 0 )) || r="${n}"
+    if (( r <= 0 )); then
+        # DSR 查询失败：用屏幕高度估算光标行。
+        # 内容滚动后光标停在最后可见行 → r = min(n, 屏幕行数)；
+        # 未滚动时 r = n。避免 fallback 到"未滚动"导致滚动后整屏点击错位
+        rows=$(stty size < /dev/tty 2>/dev/null | awk '{print $1}')
+        rows=${rows:-0}
+        [[ "${rows}" =~ ^[0-9]+$ ]] || rows=0
+        if (( rows > 0 )); then
+            r=$(( n > rows ? rows : n ))
+        else
+            r="${n}"
+        fi
+    fi
+    # 无论查询成败，清空 DSR 响应的残留字节，防止其被后续当普通文本回显
+    _tty_flush
     local off=$(( r - n ))
     if (( off != 0 )); then
         local k v
@@ -514,7 +527,7 @@ _ui_banner() {
 EOF
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.2} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.3} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 

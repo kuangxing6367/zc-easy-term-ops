@@ -399,6 +399,7 @@ fm_open_cursor() {
     if [[ -d "${full}" ]]; then
         FM_PWD="${full}"
         FM_CURSOR=0; FM_OFFSET=0
+        FM_DBL_ROW=-1   # 进入新目录后重置两段式点击状态，防止跨目录误判
     else
         fm_tui_do fm_operate_single "${full}" "$(basename "${full}")"
     fi
@@ -609,10 +610,12 @@ fm_toolbar_action() {
 }
 
 # ------------------------------------------------------------
-# 鼠标事件分发：滚轮/左键/工具栏/列表行（双击打开）
+# 鼠标事件分发：滚轮/左键/工具栏/列表行（两段式：点击=选中，再点=确认进入）
+# 说明：与主菜单交互一致——单击列表项仅移动光标（选中），
+#       再次点击同一项才确认进入（目录）或打开操作菜单（文件）。
 # ------------------------------------------------------------
 fm_handle_mouse() {
-    local b="${FM_EVB}" x="${FM_EVX}" y="${FM_EVY}" idx now
+    local b="${FM_EVB}" x="${FM_EVX}" y="${FM_EVY}" idx
     # 仅处理按下事件，忽略释放/拖拽/修饰/右键
     if (( FM_EVPRESS == 0 )); then return; fi
     # 滚轮
@@ -631,16 +634,15 @@ fm_handle_mouse() {
     if (( y >= 4 )); then
         idx=$(( FM_OFFSET + y - 4 ))
         (( idx >= FM_LEN )) && return
-        now=$(date +%s 2>/dev/null || echo 0)
-        if [[ "${idx}" == "${FM_DBL_ROW}" && $(( now - FM_DBL_TIME )) -lt 1 ]]; then
-            # 双击：打开
+        if (( idx == FM_DBL_ROW )); then
+            # 同项再次点击 → 确认进入/打开
             FM_CURSOR=${idx}
+            FM_DBL_ROW=-1
             fm_open_cursor
-            FM_DBL_ROW=-1; FM_DBL_TIME=0
         else
+            # 首次点击 → 选中（移动光标）
             FM_CURSOR=${idx}
             FM_DBL_ROW=${idx}
-            FM_DBL_TIME=${now}
         fi
     fi
 }
@@ -753,6 +755,7 @@ fm_human_size() {
 # ------------------------------------------------------------
 fm_go_parent() {
     FM_PWD="$(dirname "${FM_PWD}")"
+    FM_DBL_ROW=-1   # 返回上级后重置两段式点击状态
 }
 
 # ------------------------------------------------------------

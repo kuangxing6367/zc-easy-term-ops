@@ -83,7 +83,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.2"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.3"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -136,12 +136,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.5.2)"
+echo "[4] 版本一致性 (1.5.3)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.5.2" "${VER_CFG}"
-check_eq "conf.example 版本" "1.5.2" "${VER_EXAMPLE}"
-grep -q "## \[1.5.2\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.2]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.2]"; }
+check_eq "config.sh 版本" "1.5.3" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.3" "${VER_EXAMPLE}"
+grep -q "## \[1.5.3\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.3]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.3]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -396,6 +396,38 @@ check_true "PID 锁：过期 PID 自动清理后加锁成功" check_lock
 check_eq "PID 锁：锁文件记录当前 PID" "$$" "$(cat "${LOCK_FILE}")"
 # cleanup 应释放锁（删除锁文件）；用 _LOCK_OWNED 保护不误删他人锁
 rm -f "${LOCK_FILE}"
+
+# ---------- 13d. 文件管理器鼠标两段式（点击=选中，同项再点=确认进入） ----------
+echo ""
+echo "[13d] 文件管理器鼠标两段式（与主菜单一致）"
+TMP_FM="$(mktemp -d)"
+mkdir -p "${TMP_FM}/subdir"
+FM_PWD="${TMP_FM}"; FM_CURSOR=0; FM_OFFSET=0; FM_WINH=20; FM_LEN=0; FM_LIST=(); FM_MARKED=(); FM_STATUS_MSG=""
+FM_DBL_ROW=-1
+fm_refresh_list
+# mock fm_open_cursor：记录是否被调用（确认进入）
+_fm_open_cursor_real="$(declare -f fm_open_cursor)"
+_fm_open_cursor_called=0
+fm_open_cursor() { _fm_open_cursor_called=1; }
+# 点击列表第 2 行（y=5 → idx=1=subdir）
+FM_EVB=0; FM_EVX=10; FM_EVY=5; FM_EVPRESS=1
+fm_handle_mouse
+check_eq "首次点击仅选中 idx=1" "1" "${FM_CURSOR}"
+check_eq "首次点击不进入(open_cursor 未调用)" "0" "${_fm_open_cursor_called}"
+# 同项再次点击 → 确认进入
+fm_handle_mouse
+check_eq "同项再点确认(open_cursor 已调用)" "1" "${_fm_open_cursor_called}"
+check_eq "确认后重置两段式状态" "-1" "${FM_DBL_ROW}"
+# 点击不同项 → 切换选中，不进入
+_fm_open_cursor_called=0
+FM_EVY=6   # idx=2（subdir 之后的下一项；若不存在则越界忽略）
+if (( FM_OFFSET + 6 - 4 < FM_LEN )); then
+    fm_handle_mouse
+    check_eq "点击不同项切换选中" "$(( FM_OFFSET + 2 ))" "${FM_CURSOR}"
+    check_eq "点击不同项不进入" "0" "${_fm_open_cursor_called}"
+fi
+eval "${_fm_open_cursor_real}"
+rm -rf "${TMP_FM}"
 
 # ---------- 汇总 ----------
 echo ""
