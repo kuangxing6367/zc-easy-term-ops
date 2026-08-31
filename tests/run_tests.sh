@@ -73,7 +73,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.4.1"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.0"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -126,12 +126,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.4.1)"
+echo "[4] 版本一致性 (1.5.0)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.4.1" "${VER_CFG}"
-check_eq "conf.example 版本" "1.4.1" "${VER_EXAMPLE}"
-grep -q "## \[1.4.1\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.4.1]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.4.1]"; }
+check_eq "config.sh 版本" "1.5.0" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.0" "${VER_EXAMPLE}"
+grep -q "## \[1.5.0\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.0]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.0]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -251,6 +251,35 @@ check_eq "键盘输入 0" "0" "$(echo '0' | get_user_choice 26 2>/dev/null)"
 check_eq "键盘输入 q" "q" "$(echo 'q' | get_user_choice 26 2>/dev/null)"
 check_eq "非法输入回退" "5" "$(printf 'abc\n5\n' | get_user_choice 26 2>/dev/null)"
 
+# [10b] 鼠标两段式点击（点击=选中，再点/回车=确认；mock 事件源，测完恢复真实函数）
+echo ""
+echo "[10b] 鼠标两段式点击"
+EV_FILE_T="$(mktemp)"
+_TUI_OPT_ROW_OPT[10]="5"
+_tui_read_event_real="$(declare -f _tui_read_event)"
+_tui_read_event() {
+    local line=""
+    if [[ -s "${EV_FILE_T}" ]]; then
+        IFS= read -r line < "${EV_FILE_T}"
+        tail -n +2 "${EV_FILE_T}" > "${EV_FILE_T}.tmp" 2>/dev/null && mv "${EV_FILE_T}.tmp" "${EV_FILE_T}"
+        printf '%s' "${line}"
+    else
+        printf 'line:q'
+    fi
+    return 0
+}
+_tui_mouse_on(){ return 0; }
+_tui_mouse_off(){ return 0; }
+_tui_redraw_menu(){ :; }
+printf 'mouse:0,1,10\nmouse:0,1,10\n' > "${EV_FILE_T}"
+check_eq "点击选中再点同项确认" "5" "$(get_user_choice 26 2>/dev/null)"
+printf 'mouse:0,1,10\nline:\n' > "${EV_FILE_T}"
+check_eq "点击选中后回车确认" "5" "$(get_user_choice 26 2>/dev/null)"
+printf 'line:7\n' > "${EV_FILE_T}"
+check_eq "键盘数字直接进入" "7" "$(get_user_choice 26 2>/dev/null)"
+eval "${_tui_read_event_real}"
+rm -f "${EV_FILE_T}" "${EV_FILE_T}.tmp"
+
 echo ""
 echo "[11] CLI 协议"
 check_run "--version" "${ZETOPS_ROOT}/core/main.sh" --version
@@ -272,6 +301,35 @@ check_eq "备份返回路径" "0" "$?"
 check_eq "备份内容一致" "$(cat "${TMPDIR_TEST}/bk.conf")" "$(cat "${bk_out}")"
 ( set +e; backup_file "${TMPDIR_TEST}/missing.conf" >/dev/null 2>&1 ); rc=$?
 check_eq "备份不存在文件退出码" "1" "${rc}"
+
+# ---------- 13. 文件管理器宽度计算 / 截断 / SGR 坐标（locale 无关） ----------
+echo ""
+echo "[13] 文件管理器宽度计算与 SGR 坐标（C locale 下验证）"
+# shellcheck source=/dev/null
+source "${ZETOPS_ROOT}/modules/20_file_manager.sh"
+export LC_ALL=C LANG=C
+check_eq "fm_str_w 中文按 2 列" "4" "$(fm_str_w '返回')"
+check_eq "fm_str_w 含括号宽度" "6" "$(fm_str_w '[返回]')"
+check_eq "fm_str_w 混合宽度" "6" "$(fm_str_w 'ab中文')"
+check_eq "fm_str_clip 贴边截断" "中文…" "$(fm_str_clip '中文文件' 5)"
+check_eq "fm_str_clip 不超宽原样" "中文文件" "$(fm_str_clip '中文文件' 20)"
+check_eq "fm_str_clip 边界正好放满原样" "中文文件" "$(fm_str_clip '中文文件' 8)"
+# SGR 坐标整数化：与 fm_read_sgr 相同算法（剥离非数字字节后三段解析）
+sgr_int() {
+    local buf="$1" b="" x="" y="" tmp=""
+    tmp="${buf//[^0-9;]/}"
+    b="${tmp%%;*}"; tmp="${tmp#*;}"
+    x="${tmp%%;*}"; tmp="${tmp#*;}"
+    y="${tmp%%;*}"
+    [[ "${b}" =~ ^[0-9]+$ ]] || b=0
+    [[ "${x}" =~ ^[0-9]+$ ]] || x=0
+    [[ "${y}" =~ ^[0-9]+$ ]] || y=0
+    printf '%s %s %s' "$((b + 0))" "$((x + 0))" "$((y + 0))"
+}
+check_eq "SGR 正常解析" "0 15 10" "$(sgr_int '0;15;10')"
+check_eq "SGR 尾随分号" "0 15 10" "$(sgr_int '0;15;10;')"
+check_eq "SGR 异常字节夹带" "0 15 10" "$(sgr_int 'a0b;1x5;1y0')"
+check_eq "SGR 缺段" "0 0 0" "$(sgr_int '0;')"
 
 # ---------- 汇总 ----------
 echo ""

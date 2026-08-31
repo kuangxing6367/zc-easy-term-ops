@@ -25,6 +25,12 @@ declare -A _TUI_OPT_ROW_OPT=()
 # 消除远程/慢速终端下查询超时或响应残留导致的映射错位）
 _TUI_ROW=0
 
+# 两段式点击：当前高亮选中的选项号（空=未选中）。
+# 鼠标点击 = 选中并高亮，再次点击同一项 = 确认进入。
+_TUI_SELECTED=""
+# 当前菜单上下文："main" / "sub:<idx>" / "plugin:<idx>"，供重绘定位当前菜单
+_TUI_CTX="main"
+
 # ------------------------------------------------------------
 # 注册一个模块（由 main.sh 扫描时调用）
 # 参数：$1 文件路径
@@ -198,14 +204,29 @@ _tui_finalize_rows() {
 }
 
 # ------------------------------------------------------------
+# 将一行输出为「选中高亮」样式（整行反色 + ▸ 标记，htop/网页选中感）
+# 参数：$1 原始行（可含 ANSI 颜色）
+# 返回：无
+# ------------------------------------------------------------
+_tui_hl() {
+    local line="$1" lead="" body=""
+    lead="${line%%[![:space:]]*}"          # 保留前导空白，保持列对齐
+    body="${line#"${lead}"}"
+    printf '%s\e[7m▸ %s\e[0m\n' "${lead}" "${body}"
+}
+
+# ------------------------------------------------------------
 # 运行一个输出菜单行的命令：记录每行首部 "N." 选项与行号映射，再原样输出
 # （主菜单双列网格一行含两个选项号，同时记录第二个）
+# 若行映射到 _TUI_SELECTED 选中项，则整行反色高亮（两段式点击的视觉反馈）
 # 参数：$@ 命令及参数
 # ------------------------------------------------------------
 _tui_capture() {
     local start="${_TUI_ROW}"
     local out=""
     out=$("$@") || true
+    # 1) 先构建「行号 → 选项号」映射（不输出）
+    local -A rowmap=()
     local lineno=0 line="" plain="" first="" second=""
     while IFS= read -r line; do
         # 去除 ANSI 颜色/样式转义序列后再匹配选项号
@@ -217,14 +238,30 @@ _tui_capture() {
                 second="${BASH_REMATCH[1]}"
             fi
             if [[ -n "${second}" ]]; then
-                _TUI_OPT_ROW_OPT[$((start + lineno))]="${first} ${second}"
+                rowmap[$((start + lineno))]="${first} ${second}"
             else
-                _TUI_OPT_ROW_OPT[$((start + lineno))]="${first}"
+                rowmap[$((start + lineno))]="${first}"
             fi
         fi
         lineno=$((lineno + 1))
     done <<< "${out}"
-    printf '%s\n' "${out}"
+    # 同步到全局映射（供鼠标行号反查）
+    local k
+    for k in "${!rowmap[@]}"; do
+        _TUI_OPT_ROW_OPT[${k}]="${rowmap[$k]}"
+    done
+    # 2) 逐行重放输出，命中选中项的行整行高亮
+    local sel="${_TUI_SELECTED:-}"
+    lineno=0
+    while IFS= read -r line; do
+        local r=$((start + lineno))
+        if [[ -n "${sel}" ]] && [[ " ${rowmap[${r}]:-} " == *" ${sel} "* ]]; then
+            _tui_hl "${line}"
+        else
+            printf '%s\n' "${line}"
+        fi
+        lineno=$((lineno + 1))
+    done <<< "${out}"
     local nlc="${out//[^$'\n']/}"
     _TUI_ROW=$(( start + ${#nlc} + 1 ))
 }
@@ -351,7 +388,27 @@ _tui_read_event() {
 }
 
 # ------------------------------------------------------------
-# 读取用户选择（1..max，0 退出，q 返回；TUI 下支持鼠标点击）
+# 重绘当前菜单（两段式点击选中高亮后调用）。
+# 本函数在命令替换子 shell（choice=$(get_user_choice...)）中执行，
+# stdout 会被捕获，故重绘输出显式写入 /dev/tty。
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+_tui_redraw_menu() {
+    [[ -e /dev/tty ]] || return 0
+    local typ="${_TUI_CTX:-main}" arg="${_TUI_CTX#*:}"
+    {
+        case "${typ}" in
+            main)   show_main_menu_render ;;
+            sub)    show_sub_menu_render "${arg}" ;;
+            plugin) show_plugin_menu_render "${arg}" ;;
+            *)      : ;;
+        esac
+    } > /dev/tty 2>&1 || true
+}
+
+# ------------------------------------------------------------
+# 读取用户选择（1..max，0 退出，q 返回；TUI 下支持鼠标两段式点击）
 # 参数：$1 最大选项数
 # 输出：用户选择数字
 # ------------------------------------------------------------
@@ -360,6 +417,7 @@ get_user_choice() {
     local ans=""
     local mouse=0 src="stdin"
     local prompt=""
+    local sel="" ev="" btn="" x="" y="" opt=""
     # TUI 鼠标模式：真实终端 + 非 dumb + 未显式关闭
     if [[ -t 0 ]] && [[ "${TERM:-dumb}" != "dumb" ]] && [[ "${ZETOPS_TUI_MOUSE:-on}" == "on" ]] && _tui_mouse_on; then
         mouse=1
@@ -367,22 +425,33 @@ get_user_choice() {
     fi
     # 注意：本函数通过命令替换调用（choice=$(get_user_choice ...)），
     # 因此提示/告警必须输出到 stderr，stdout 只返回最终选择数字
-    prompt="  ${COLOR_BOLD}${COLOR_GREEN}请输入操作编号 (0-${max}) [q=退出${COLOR_RESET}${COLOR_GRAY}，鼠标可点击菜单${COLOR_RESET}${COLOR_BOLD}${COLOR_GREEN}]: ${COLOR_RESET}"
+    _TUI_SELECTED=""
+    prompt="  ${COLOR_BOLD}${COLOR_GREEN}请输入操作编号 (0-${max}) [q=退出${COLOR_RESET}${COLOR_GRAY}，鼠标：点击选中，再次点击确认${COLOR_RESET}${COLOR_BOLD}${COLOR_GREEN}]: ${COLOR_RESET}"
     # 提示只打印一次：空闲等待（超时）时不重复刷新，避免"自动刷新"现象
     echo -n "${prompt}" >&2
     while true; do
-        local ev=""
         ev=$(_tui_read_event "${src}") || true
         case "${ev}" in
             line:q|line:Q)
                 _tui_mouse_off "${mouse}"
+                _TUI_SELECTED=""
                 echo "q"
                 return 0
+                ;;
+            line:)
+                # 回车：确认当前高亮选中项（若有）
+                if [[ -n "${sel}" ]]; then
+                    _tui_mouse_off "${mouse}"
+                    _TUI_SELECTED=""
+                    echo "${sel}"
+                    return 0
+                fi
                 ;;
             line:*)
                 ans="${ev#line:}"
                 if [[ "${ans}" =~ ^[0-9]+$ ]] && (( ans >= 0 && ans <= max )); then
                     _tui_mouse_off "${mouse}"
+                    _TUI_SELECTED=""
                     echo "${ans}"
                     return 0
                 fi
@@ -390,15 +459,29 @@ get_user_choice() {
                 echo -n "${prompt}" >&2
                 ;;
             mouse:*)
-                local btn x y opt=""
                 IFS=',' read -r btn x y <<< "${ev#mouse:}"
                 # 仅响应左键按下（btn==0；释放/滚轮/拖拽忽略）
                 if (( btn == 0 )); then
                     opt=$(_tui_row_to_opt "${y}" "${x}")
                     if [[ -n "${opt}" ]] && (( opt >= 0 && opt <= max )); then
-                        _tui_mouse_off "${mouse}"
-                        echo "${opt}"
-                        return 0
+                        if [[ "${sel}" == "${opt}" ]]; then
+                            # 同项再次点击 → 确认进入
+                            _tui_mouse_off "${mouse}"
+                            _TUI_SELECTED=""
+                            echo "${opt}"
+                            return 0
+                        fi
+                        # 首次点击 → 选中并高亮重绘
+                        sel="${opt}"
+                        _TUI_SELECTED="${opt}"
+                        _tui_redraw_menu
+                        echo -n "${prompt}" >&2
+                    elif [[ -n "${sel}" ]]; then
+                        # 点击空白 → 取消选中
+                        sel=""
+                        _TUI_SELECTED=""
+                        _tui_redraw_menu
+                        echo -n "${prompt}" >&2
                     fi
                 fi
                 ;;
@@ -423,7 +506,7 @@ _ui_banner() {
 EOF
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.4.1} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.0} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 
@@ -487,11 +570,11 @@ _ui_plugins() {
 }
 
 # ------------------------------------------------------------
-# 渲染主菜单
+# 渲染主菜单（不 finalize 行映射；重绘时单独调用）
 # 参数：无
 # 返回：无
 # ------------------------------------------------------------
-show_main_menu() {
+show_main_menu_render() {
     _tui_clear
     _TUI_OPT_ROW_OPT=()
     _ui_banner
@@ -502,9 +585,37 @@ show_main_menu() {
     _tui_capture _ui_plugins
     _tui_nl
     _tui_hr
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}q${COLOR_RESET}. 退出    ${COLOR_GRAY}输入模块编号${COLOR_RESET}${COLOR_CYAN}或鼠标点击${COLOR_RESET}${COLOR_GRAY}进入对应功能${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}q${COLOR_RESET}. 退出    ${COLOR_GRAY}点击菜单项 = 选中（高亮），再次点击同一项 = 确认进入；数字回车 = 直接进入${COLOR_RESET}"
     _tui_nl
+}
+
+# ------------------------------------------------------------
+# 渲染主菜单（完整入口：渲染 + 行映射校准）
+# 参数：无
+# 返回：无
+# ------------------------------------------------------------
+show_main_menu() {
+    _TUI_CTX="main"
+    show_main_menu_render
     _tui_finalize_rows
+}
+
+# ------------------------------------------------------------
+# 渲染子菜单（不 finalize；两段式点击重绘时调用）
+# 参数：$1 模块数组下标
+# 返回：无
+# ------------------------------------------------------------
+show_sub_menu_render() {
+    local idx="$1"
+    _tui_clear
+    _TUI_OPT_ROW_OPT=()
+    _tui_line "${COLOR_BOLD}${COLOR_CYAN}"
+    _tui_line "  ┌────────────────────────────────────────────────────┐"
+    _tui_line "  │  ${module_name}  ▸  输入 0 返回主菜单（鼠标点击选中，再点确认）"
+    _tui_line "  └────────────────────────────────────────────────────┘"
+    _tui_line "${COLOR_RESET}"
+    _tui_run module_description
+    _tui_capture module_menu
 }
 
 # ------------------------------------------------------------
@@ -521,17 +632,10 @@ show_sub_menu() {
     # shellcheck source=/dev/null
     source "${file}"
     CURRENT_MODULE="${short}"
+    _TUI_CTX="sub:${idx}"
 
     while true; do
-        _tui_clear
-        _TUI_OPT_ROW_OPT=()
-        _tui_line "${COLOR_BOLD}${COLOR_CYAN}"
-        _tui_line "  ┌────────────────────────────────────────────────────┐"
-        _tui_line "  │  ${module_name}  ▸  输入 0 返回主菜单（鼠标可点击）"
-        _tui_line "  └────────────────────────────────────────────────────┘"
-        _tui_line "${COLOR_RESET}"
-        _tui_run module_description
-        _tui_capture module_menu
+        show_sub_menu_render "${idx}"
         _tui_finalize_rows
         choice=$(get_user_choice 99)
         [[ "${choice}" == "q" ]] && break
@@ -543,6 +647,23 @@ show_sub_menu() {
         esac
     done
     CURRENT_MODULE="menu"
+}
+
+# ------------------------------------------------------------
+# 渲染插件子菜单（不 finalize；两段式点击重绘时调用）
+# 参数：$1 插件数组下标
+# 返回：无
+# ------------------------------------------------------------
+show_plugin_menu_render() {
+    local idx="$1"
+    _tui_clear
+    _TUI_OPT_ROW_OPT=()
+    _tui_line "${COLOR_BOLD}${COLOR_CYAN}"
+    _tui_line "  ┌────────────────────────────────────────────────────┐"
+    _tui_line "  │  [插件] ${name}  ▸  输入 0 返回主菜单（鼠标点击选中，再点确认）"
+    _tui_line "  └────────────────────────────────────────────────────┘"
+    _tui_line "${COLOR_RESET}"
+    _tui_capture plugin_menu
 }
 
 # ------------------------------------------------------------
@@ -559,16 +680,10 @@ show_plugin_menu() {
     # shellcheck source=/dev/null
     source "${file}"
     CURRENT_MODULE="plugin"
+    _TUI_CTX="plugin:${idx}"
 
     while true; do
-        _tui_clear
-        _TUI_OPT_ROW_OPT=()
-        _tui_line "${COLOR_BOLD}${COLOR_CYAN}"
-        _tui_line "  ┌────────────────────────────────────────────────────┐"
-        _tui_line "  │  [插件] ${name}  ▸  输入 0 返回主菜单（鼠标可点击）"
-        _tui_line "  └────────────────────────────────────────────────────┘"
-        _tui_line "${COLOR_RESET}"
-        _tui_capture plugin_menu
+        show_plugin_menu_render "${idx}"
         _tui_finalize_rows
         choice=$(get_user_choice 99)
         [[ "${choice}" == "q" ]] && break

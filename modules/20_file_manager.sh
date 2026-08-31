@@ -20,7 +20,7 @@ set -euo pipefail
 
 module_name="文件管理器"
 module_short="file_manager"
-module_version="2.0.0"
+module_version="2.1.0"
 
 FM_BOOKMARKS="${FM_BOOKMARKS:-${HOME}/.zetops/fm_bookmarks}"
 FM_CLIPBOARD="${FM_CLIPBOARD:-${HOME}/.zetops/fm_clipboard}"
@@ -96,18 +96,66 @@ fm_tui_do() {
 # 字符串显示宽度（非 ASCII 按 2 列估算，含中文/Emoji）
 # 参数：$1 字符串
 # 输出：列数
+# 说明：手动 UTF-8 解码计数，不依赖 locale——在 LC_ALL=C 下
+#       ${#s}/${s:i:1} 会按字节切分导致中文宽度算成 3 倍，
+#       进而使工具栏点击区域与列表布局错位（"布局乱+点击不符"的常见根因）
 # ------------------------------------------------------------
 fm_str_w() {
-    local s="$1" i c n=0
-    for ((i = 0; i < ${#s}; i++)); do
-        c="${s:i:1}"
-        if [[ "${c}" =~ [^\x00-\x7F] ]]; then
-            n=$((n + 2))
+    local s="$1" i=0 n=0 len byte clen
+    local LC_ALL=C
+    len=${#s}
+    while (( i < len )); do
+        byte=$(printf '%d' "'${s:i:1}")
+        if (( byte < 0x80 )); then
+            n=$((n + 1)); i=$((i + 1))
         else
-            n=$((n + 1))
+            clen=1
+            if   (( byte >= 0xF0 )); then clen=4
+            elif (( byte >= 0xE0 )); then clen=3
+            elif (( byte >= 0xC0 )); then clen=2
+            fi
+            n=$((n + 2))          # 东亚宽字符按 2 列
+            i=$((i + clen))
         fi
     done
     printf '%d' "${n}"
+}
+
+# ------------------------------------------------------------
+# 按显示宽度截断字符串（超宽尾部追加 …，保持字符边界，不依赖 locale）
+# 参数：$1 字符串  $2 最大显示列数
+# 输出：截断后的字符串
+# ------------------------------------------------------------
+fm_str_clip() {
+    local s="$1" maxw="$2" total
+    total=$(fm_str_w "${s}")
+    if (( total <= maxw )); then
+        printf '%s' "${s}"
+        return 0
+    fi
+    # 需要截断：留 1 列给省略号 …（U+2026 按 1 列）
+    (( maxw < 3 )) && { printf '…'; return 0; }
+    local i=0 w=0 n=0 len byte clen cw
+    local LC_ALL=C
+    len=${#s}
+    while (( i < len )); do
+        byte=$(printf '%d' "'${s:i:1}")
+        if (( byte < 0x80 )); then
+            clen=1; cw=1
+        else
+            clen=1; cw=2
+            if   (( byte >= 0xF0 )); then clen=4
+            elif (( byte >= 0xE0 )); then clen=3
+            elif (( byte >= 0xC0 )); then clen=2
+            fi
+        fi
+        if (( w + cw > maxw - 1 )); then
+            break
+        fi
+        n=$((i + clen))
+        w=$((w + cw)); i=$((i + clen))
+    done
+    printf '%s…' "${s:0:n}"
 }
 
 # ------------------------------------------------------------
@@ -188,12 +236,19 @@ fm_read_sgr() {
         fi
         buf+="${c}"
     done
-    local b="" rest="" x="" y=""
-    b="${buf%%;*}"
-    rest="${buf#*;}"
-    x="${rest%%;*}"
-    y="${rest#*;}"
-    FM_EVB=${b:-0}; FM_EVX=${x:-0}; FM_EVY=${y:-0}
+    local b="" x="" y="" tmp=""
+    # 防御：剥离所有非数字/分号字节，避免尾随分号或异常字节把坐标变成
+    # "10;" 之类的非整数字符串，导致后续算术与行映射错乱（点击位置不符的常见根因）
+    tmp="${buf//[^0-9;]/}"
+    b="${tmp%%;*}"
+    tmp="${tmp#*;}"
+    x="${tmp%%;*}"
+    tmp="${tmp#*;}"
+    y="${tmp%%;*}"
+    [[ "${b}" =~ ^[0-9]+$ ]] || b=0
+    [[ "${x}" =~ ^[0-9]+$ ]] || x=0
+    [[ "${y}" =~ ^[0-9]+$ ]] || y=0
+    FM_EVB=$(( b + 0 )); FM_EVX=$(( x + 0 )); FM_EVY=$(( y + 0 ))
     FM_EVPRESS=1
     [[ "${term}" == "m" ]] && FM_EVPRESS=0
 }
@@ -245,12 +300,20 @@ fm_refresh_list() {
 # ------------------------------------------------------------
 fm_render() {
     local rows cols
-    rows=$(stty size 2>/dev/null | awk '{print $1}' || echo 24)
-    cols=$(stty size 2>/dev/null | awk '{print $2}' || echo 80)
+    # 从 /dev/tty 读取终端行列：stty size 默认从 stdin 读，在嵌套/重定向/某些
+    # 终端组合下会拿到错误值，导致列表窗口高度与鼠标坐标错位——即"布局乱 + 点击位置不符"
+    if [[ -e /dev/tty ]]; then
+        local sz=""
+        sz=$(stty size < /dev/tty 2>/dev/null) || sz=""
+        rows=$(printf '%s' "${sz}" | awk '{print $1}')
+        cols=$(printf '%s' "${sz}" | awk '{print $2}')
+    fi
     rows=${rows:-24}; cols=${cols:-80}
     (( rows < 12 )) && rows=12
     (( cols < 40 )) && cols=40
-    FM_WINH=$(( rows - 6 ))
+    # 布局：标题(1)+工具栏(2)+表头(3)+列表(4..rows-3)+状态行(rows-1)+帮助行(rows)
+    # 列表从第 4 行起，无空白缝隙；FM_WINH 即列表窗口高度
+    FM_WINH=$(( rows - 5 ))
     (( FM_WINH < 4 )) && FM_WINH=4
 
     local i r
@@ -272,14 +335,16 @@ fm_render() {
     done
     printf '\e[0m\e[K\n'
 
-    # 表头
-    printf '\e[33m 名称                                            大小 │ 权限\e[0m\e[K\n'
+    # 表头（与列表列宽对齐：名称列占 cols-28，右侧为大小/权限）
+    local hdr_budget=$(( cols - 28 ))
+    (( hdr_budget < 10 )) && hdr_budget=10
+    printf '\e[33m  %-*s%s\e[0m\e[K\n' "$(( hdr_budget - 2 ))" "名称" " 大小 权限"
 
     # 文件列表窗口
     local idx item type rest name full prefix p size perm mtime name_disp
     for ((r = 0; r < FM_WINH; r++)); do
         idx=$(( FM_OFFSET + r ))
-        printf '\e[%d;1H\e[K' $(( 5 + r ))
+        printf '\e[%d;1H\e[K' $(( 4 + r ))
         (( idx >= FM_LEN )) && continue
         item="${FM_LIST[$idx]}"
         type="${item%%|*}"; rest="${item#*|}"; name="${rest%%|*}"; full="${rest#*|}"
@@ -301,9 +366,7 @@ fm_render() {
         local budget=$(( cols - 28 ))
         (( budget < 10 )) && budget=10
         if (( $(fm_str_w "${name_disp}") > budget )); then
-            local mc=$(( budget / 2 - 1 ))
-            (( mc < 1 )) && mc=1
-            name_disp="$(printf '%s' "${name_disp}" | cut -c1-${mc})…"
+            name_disp="$(fm_str_clip "${name_disp}" "${budget}")"
         fi
         if [[ "${type}" == "D" ]]; then
             printf '\e[36m%s %s\e[0m\e[K\n' "${prefix}" "${name_disp}"
@@ -328,7 +391,7 @@ fm_render() {
     printf '\e[%d;1H\e[K\e[90m ↑↓选择 Enter/双击打开 ←返回 Space多选 c复制 x剪切 v粘贴 d删除 a操作 n新建 f搜索 b书签 t目录树 q退出\e[0m' "${rows}"
 
     # 光标放回当前行
-    printf '\e[%d;1H' $(( 5 + FM_CURSOR - FM_OFFSET ))
+    printf '\e[%d;1H' $(( 4 + FM_CURSOR - FM_OFFSET ))
 }
 
 # ------------------------------------------------------------
@@ -586,9 +649,9 @@ fm_handle_mouse() {
         [[ -n "${hit}" ]] && fm_toolbar_action "${hit}"
         return
     fi
-    # 列表区（从第 5 行开始）
-    if (( y >= 5 )); then
-        idx=$(( FM_OFFSET + y - 5 ))
+    # 列表区（从第 4 行开始）
+    if (( y >= 4 )); then
+        idx=$(( FM_OFFSET + y - 4 ))
         (( idx >= FM_LEN )) && return
         now=$(date +%s 2>/dev/null || echo 0)
         if [[ "${idx}" == "${FM_DBL_ROW}" && $(( now - FM_DBL_TIME )) -lt 1 ]]; then
