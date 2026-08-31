@@ -83,7 +83,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.6"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.7"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -136,12 +136,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.5.6)"
+echo "[4] 版本一致性 (1.5.7)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.5.6" "${VER_CFG}"
-check_eq "conf.example 版本" "1.5.6" "${VER_EXAMPLE}"
-grep -q "## \[1.5.6\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.6]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.6]"; }
+check_eq "config.sh 版本" "1.5.7" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.7" "${VER_EXAMPLE}"
+grep -q "## \[1.5.7\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.7]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.7]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -550,10 +550,10 @@ ED_ROW=0; ED_COL=${#ED_BUF[0]}
 ed_delete_char
 check_eq "行尾Delete合并" "${ED_BUF[0]}" "Xhelloworld"
 check_eq "合并后行数2" "${#ED_BUF[@]}" "3"
-# 列换算（中文宽字符 2 列）
-ED_GUTTER=6
-check_eq "col_to_screen ASCII" "$(ed_col_to_screen 'abc' 3)" "10"
-check_eq "col_to_screen 中文2列" "$(ed_col_to_screen '中文' 2)" "9"
+# 列换算（nano 风格无行号列，ED_GUTTER=0；中文宽字符按 2 列）
+ED_GUTTER=0
+check_eq "col_to_screen ASCII" "$(ed_col_to_screen 'abc' 3)" "4"
+check_eq "col_to_screen 中文2列" "$(ed_col_to_screen '中文' 2)" "3"
 check_eq "screen_to_col 中文点击列3" "$(ed_screen_to_col '中文' 3)" "3"
 check_eq "screen_to_col 中文点击列1" "$(ed_screen_to_col '中文' 1)" "0"
 # 保存
@@ -566,6 +566,34 @@ if ed_save; then PASS=$((PASS + 1)); echo "  PASS: 编辑器保存成功"; else 
 check_eq "保存后文件内容" "$(cat "${TMP_ED}/s.txt")" "saved-line
 第二行"
 check_eq "保存后MOD清零" "${ED_MOD}" "0"
+# 撤销 / 重做（Alt+U / Alt+E）
+ED_ROWS=24; ED_COLS=80
+ed_load "${TMP_ED}/a.txt"     # 重新加载，清空撤销栈
+ED_ROW=0; ED_COL=0; ED_MOD=0
+ed_insert_char "Z"
+check_eq "插入Z后行" "${ED_BUF[0]}" "Zhello"
+check_eq "插入Z后MOD" "${ED_MOD}" "1"
+ed_undo
+check_eq "撤销后行" "${ED_BUF[0]}" "hello"
+check_eq "撤销后行数" "${#ED_BUF[@]}" "4"
+check_eq "撤销后MOD" "${ED_MOD}" "0"
+ed_redo
+check_eq "重做后行" "${ED_BUF[0]}" "Zhello"
+check_eq "重做后MOD" "${ED_MOD}" "1"
+# 连续编辑多步撤销/重做
+ed_insert_char "Q"
+ed_insert_char "W"
+check_eq "连续插入后" "ZQWhello" "${ED_BUF[0]}"
+ed_undo
+check_eq "撤销W" "ZQhello" "${ED_BUF[0]}"
+ed_undo
+check_eq "撤销Q" "Zhello" "${ED_BUF[0]}"
+ed_undo
+check_eq "撤销回初始" "hello" "${ED_BUF[0]}"
+check_eq "撤销栈空" "0" "${#ED_UNDO[@]}"
+ed_redo
+check_eq "重做回Zhello" "Zhello" "${ED_BUF[0]}"
+check_eq "重做栈仍有余量" "2" "${#ED_REDO[@]}"
 # 只读拒绝保存
 chmod 444 "${TMP_ED}/s.txt"
 ed_load "${TMP_ED}/s.txt"
