@@ -952,6 +952,17 @@ fm_edit_file() {
     [[ -f "${full}" ]] || { log_error "不是文件: ${full}"; return; }
 
     local ed="" rc=0 tried=()
+    # 优先内置纯 Bash TUI 编辑器（零外部依赖）
+    if declare -f tui_edit_file >/dev/null 2>&1; then
+        tui_edit_file "${full}"
+        rc=$?
+        if (( rc == 0 )); then
+            log_success "编辑完成: ${full}（内置 TUI 编辑器）"
+            audit_log "编辑文件 ${full}" "成功"
+            return 0
+        fi
+        log_warning "内置编辑器未完成(rc=${rc})，回退外部编辑器..."
+    fi
     for ed in nano vim vi ed; do
         check_command "${ed}" || continue
         tried+=("${ed}")

@@ -83,7 +83,7 @@ check_contains() {
 }
 
 echo "======================================================"
-echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.5"
+echo "ZETOPS 自动化测试套件  版本一致性目标: 1.5.6"
 echo "根目录: ${ZETOPS_ROOT}"
 echo "======================================================"
 
@@ -136,12 +136,12 @@ done
 
 # ---------- 4. 版本一致性 ----------
 echo ""
-echo "[4] 版本一致性 (1.5.5)"
+echo "[4] 版本一致性 (1.5.6)"
 VER_CFG=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/core/config.sh" | head -1 | cut -d= -f2 | tr -d '"')
 VER_EXAMPLE=$(grep -E '^ZETOPS_VERSION=' "${ZETOPS_ROOT}/config/zetops.conf.example" | head -1 | cut -d= -f2 | tr -d '"')
-check_eq "config.sh 版本" "1.5.5" "${VER_CFG}"
-check_eq "conf.example 版本" "1.5.5" "${VER_EXAMPLE}"
-grep -q "## \[1.5.5\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.5]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.5]"; }
+check_eq "config.sh 版本" "1.5.6" "${VER_CFG}"
+check_eq "conf.example 版本" "1.5.6" "${VER_EXAMPLE}"
+grep -q "## \[1.5.6\]" "${ZETOPS_ROOT}/docs/CHANGELOG.md" && { PASS=$((PASS + 1)); echo "  PASS: CHANGELOG 含 [1.5.6]"; } || { FAIL=$((FAIL + 1)); echo "  FAIL: CHANGELOG 缺少 [1.5.6]"; }
 
 # ---------- 5. conf 模板可解析 ----------
 echo ""
@@ -500,6 +500,79 @@ eval "${_fm_audit_real}"
 unset -f command
 unset _ed_avail _ed_rcs _ed_calls
 rm -rf "${TMP_FM}"
+
+# ---------- 21. 内置 TUI 编辑器：编辑操作纯逻辑 ----------
+echo ""
+echo "[21] 内置 TUI 编辑器编辑操作（纯 Bash 零依赖）"
+# shellcheck source=/dev/null
+source "${ZETOPS_ROOT}/core/editor.sh"
+TMP_ED="$(mktemp -d)"
+printf 'hello\nworld\n\nlast\n' > "${TMP_ED}/a.txt"
+ed_load "${TMP_ED}/a.txt"
+check_eq "加载4行(含空行)" "${#ED_BUF[@]}" "4"
+check_eq "第1行内容" "${ED_BUF[0]}" "hello"
+check_eq "第3行空行" "${ED_BUF[2]}" ""
+: > "${TMP_ED}/empty.txt"
+ed_load "${TMP_ED}/empty.txt"
+check_eq "空文件至少1行" "${#ED_BUF[@]}" "1"
+check_eq "空文件首行空" "${ED_BUF[0]}" ""
+# 插入（ASCII + 中文多字节）
+ed_load "${TMP_ED}/a.txt"
+ED_ROW=0; ED_COL=0
+ed_insert_char "X"
+check_eq "插入字符后行" "${ED_BUF[0]}" "Xhello"
+ed_insert_char "中文"
+check_eq "插入中文后行" "${ED_BUF[0]}" "X中文hello"
+check_eq "插入中文后列(字节)" "${ED_COL}" "7"
+# 退格删完整中文
+ed_backspace
+check_eq "退格删中文" "${ED_BUF[0]}" "X中hello"
+# 字符级左移
+ed_move left
+check_eq "左移跳过中文到1" "${ED_COL}" "1"
+# 回车拆行
+ed_enter
+check_eq "回车拆行行数" "${#ED_BUF[@]}" "5"
+check_eq "拆行前半" "${ED_BUF[0]}" "X"
+check_eq "拆行后半" "${ED_BUF[1]}" "中hello"
+check_eq "回车后行2" "${ED_BUF[2]}" "world"
+# 行首退格合并
+ED_ROW=1; ED_COL=0
+ed_backspace
+check_eq "行首退格合并" "${ED_BUF[0]}" "X中hello"
+check_eq "合并后行数" "${#ED_BUF[@]}" "4"
+# Delete 删光标处中文
+ED_ROW=0; ED_COL=1
+ed_delete_char
+check_eq "Delete删中文" "${ED_BUF[0]}" "Xhello"
+# 行尾 Delete 合并下一行
+ED_ROW=0; ED_COL=${#ED_BUF[0]}
+ed_delete_char
+check_eq "行尾Delete合并" "${ED_BUF[0]}" "Xhelloworld"
+check_eq "合并后行数2" "${#ED_BUF[@]}" "3"
+# 列换算（中文宽字符 2 列）
+ED_GUTTER=6
+check_eq "col_to_screen ASCII" "$(ed_col_to_screen 'abc' 3)" "10"
+check_eq "col_to_screen 中文2列" "$(ed_col_to_screen '中文' 2)" "9"
+check_eq "screen_to_col 中文点击列3" "$(ed_screen_to_col '中文' 3)" "3"
+check_eq "screen_to_col 中文点击列1" "$(ed_screen_to_col '中文' 1)" "0"
+# 保存
+printf 'v1\n' > "${TMP_ED}/s.txt"
+ed_load "${TMP_ED}/s.txt"
+ED_BUF[0]="saved-line"
+ED_BUF+=("第二行")
+ED_MOD=1
+if ed_save; then PASS=$((PASS + 1)); echo "  PASS: 编辑器保存成功"; else FAIL=$((FAIL + 1)); echo "  FAIL: 编辑器保存失败"; fi
+check_eq "保存后文件内容" "$(cat "${TMP_ED}/s.txt")" "saved-line
+第二行"
+check_eq "保存后MOD清零" "${ED_MOD}" "0"
+# 只读拒绝保存
+chmod 444 "${TMP_ED}/s.txt"
+ed_load "${TMP_ED}/s.txt"
+check_eq "只读标记" "${ED_READONLY}" "1"
+if ed_save; then FAIL=$((FAIL + 1)); echo "  FAIL: 只读不应保存"; else PASS=$((PASS + 1)); echo "  PASS: 只读拒绝保存"; fi
+chmod 644 "${TMP_ED}/s.txt"
+rm -rf "${TMP_ED}"
 
 # ---------- 汇总 ----------
 echo ""

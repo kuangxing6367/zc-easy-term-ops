@@ -3,7 +3,7 @@
 # 文件：core/main.sh
 # 功能：主程序入口（主菜单调度核心）
 # 作者：zc 团队
-# 版本：1.5.5
+# 版本：1.5.6
 # 日期：2026-08-05
 # 说明：加载核心库 → 环境检查 → 锁检查 → 扫描模块/插件 → 双协议调度
 #   （默认 CLI：--help/--version/--list/--run/--backup；--tui 进入交互界面）
@@ -292,6 +292,9 @@ main() {
     source "${ZETOPS_ROOT}/core/config.sh"
     # shellcheck source=/dev/null
     source "${ZETOPS_ROOT}/core/detect_env.sh"
+    # 内置纯 Bash TUI 文本编辑器（依赖 utils.sh 的宽字符函数；不注册为独立模块）
+    # shellcheck source=/dev/null
+    source "${ZETOPS_ROOT}/core/editor.sh"
     # shellcheck source=/dev/null
     source "${ZETOPS_ROOT}/core/menu.sh"
 

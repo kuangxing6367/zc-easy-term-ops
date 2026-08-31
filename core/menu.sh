@@ -604,7 +604,7 @@ EOF
     fi
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.5} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.6} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 
@@ -613,7 +613,7 @@ EOF
 # 参数：无
 # ------------------------------------------------------------
 _ui_banner_compact() {
-    _tui_line "  ${COLOR_BOLD}${COLOR_BLUE}ZETOPS${COLOR_RESET} ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维工具箱${COLOR_RESET}  ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.5} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_BLUE}ZETOPS${COLOR_RESET} ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维工具箱${COLOR_RESET}  ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.6} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 
