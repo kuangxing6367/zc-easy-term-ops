@@ -205,9 +205,19 @@ install_ok "项目文件就绪"
 # ------------------------------------------------------------
 SYMLINK="/usr/local/bin/zetops"
 install_echo "创建软链接 ${SYMLINK} -> ${INSTALL_PREFIX}/core/main.sh"
+# 先删除旧的软链接或文件
+rm -f "${SYMLINK}" 2>/dev/null || true
+# 确保目标目录存在
+mkdir -p /usr/local/bin
+# 创建软链接
 ln -sf "${INSTALL_PREFIX}/core/main.sh" "${SYMLINK}"
 chmod +x "${SYMLINK}"
-install_ok "软链接创建完成"
+# 验证软链接
+if [[ -L "${SYMLINK}" && -f "${SYMLINK}" ]]; then
+    install_ok "软链接创建完成: $(ls -la ${SYMLINK})"
+else
+    install_err "软链接创建失败，请手动检查"
+fi
 
 # ------------------------------------------------------------
 # 5. 初始化配置目录与日志目录
