@@ -123,6 +123,19 @@ for c in tput rsync unzip; do
     command -v "${c}" >/dev/null 2>&1 || NEED_INSTALL+=("${c}")
 done
 
+# 临时禁用可能有问题的第三方源（如不支持当前发行版的 Docker CE 源）
+BROKEN_SOURCES=""
+if command -v apt-get >/dev/null 2>&1 && [[ ${#NEED_INSTALL[@]} -gt 0 ]]; then
+    for list_file in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+        [[ -f "${list_file}" ]] || continue
+        if grep -qE 'docker|docker-ce' "${list_file}" 2>/dev/null; then
+            BROKEN_SOURCES="${BROKEN_SOURCES} ${list_file}"
+            mv "${list_file}" "${list_file}.bak" 2>/dev/null || true
+            install_echo "临时禁用: ${list_file}"
+        fi
+    done
+fi
+
 if [[ ${#NEED_INSTALL[@]} -gt 0 ]]; then
     install_echo "需要安装缺失依赖: ${NEED_INSTALL[*]}"
     PM=""
@@ -133,22 +146,15 @@ if [[ ${#NEED_INSTALL[@]} -gt 0 ]]; then
     command -v apk >/dev/null 2>&1 && PM=apk
     case "${PM}" in
         apt)
-            # 临时禁用可能有问题的第三方源（如不支持当前发行版的 Docker CE 源）
-            BROKEN_SOURCES=""
-            for list_file in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
-                [[ -f "${list_file}" ]] || continue
-                if grep -qE 'docker|docker-ce' "${list_file}" 2>/dev/null; then
-                    BROKEN_SOURCES="${BROKEN_SOURCES} ${list_file}"
-                    mv "${list_file}" "${list_file}.bak" 2>/dev/null || true
-                    install_echo "临时禁用: ${list_file}"
-                fi
-            done
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${NEED_INSTALL[@]}"
-            # 恢复被临时禁用的源
-            for bak_file in ${BROKEN_SOURCES}; do
-                [[ -f "${bak_file}.bak" ]] && mv "${bak_file}.bak" "${bak_file}" 2>/dev/null || true
-            done
+# 恢复被临时禁用的源
+restore_broken_sources() {
+    for bak_file in ${BROKEN_SOURCES}; do
+        [[ -f "${bak_file}.bak" ]] && mv "${bak_file}.bak" "${bak_file}" 2>/dev/null || true
+    done
+}
+trap restore_broken_sources EXIT
             ;;
         dnf|yum)
             "${PM}" install -y "${NEED_INSTALL[@]}"
