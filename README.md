@@ -9,10 +9,10 @@
 ## 一键安装 | Quick Install
 
 ```bash
-# 方式一：直接运行（推荐）
-sudo bash <(curl -sL https://raw.githubusercontent.com/kuangxing6367/zc-easy-term-ops/main/install.sh)
+# 方式一：下载安装脚本执行
+curl -sL https://raw.githubusercontent.com/kuangxing6367/zc-easy-term-ops/main/install.sh -o install.sh && sudo bash install.sh
 
-# 方式二：克隆后运行
+# 方式二：克隆仓库执行
 git clone https://github.com/kuangxing6367/zc-easy-term-ops.git
 cd zc-easy-term-ops
 sudo bash install.sh
