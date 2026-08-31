@@ -542,7 +542,7 @@ get_user_choice() {
                     return 0
                 fi
                 echo "${COLOR_YELLOW}  ⚠ 输入无效，请输入 0-${max} 的数字${COLOR_RESET}" >&2
-                echo -n "${prompt}" >&2
+                printf '\r\033[K%s' "${prompt}" >&2
                 ;;
             key:up|key:down|key:left|key:right)
                 # 方向键导航：在当前渲染的选项集合中上下移动选中项
@@ -581,7 +581,7 @@ get_user_choice() {
                     sel="${_ol[$_target]}"
                     _TUI_SELECTED="${sel}"
                     _tui_redraw_menu
-                    echo -n "${prompt}" >&2
+                    printf '\r\033[K%s' "${prompt}" >&2
                 fi
                 ;;
             mouse:*)
@@ -612,13 +612,13 @@ get_user_choice() {
                         sel="${opt}"
                         _TUI_SELECTED="${opt}"
                         _tui_redraw_menu
-                        echo -n "${prompt}" >&2
+                        printf '\r\033[K%s' "${prompt}" >&2
                     elif [[ -n "${sel}" ]]; then
                         # 点击空白 → 取消选中
                         sel=""
                         _TUI_SELECTED=""
                         _tui_redraw_menu
-                        echo -n "${prompt}" >&2
+                        printf '\r\033[K%s' "${prompt}" >&2
                     fi
                 fi
                 ;;
@@ -651,7 +651,7 @@ EOF
     fi
     _TUI_ROW=$(( _TUI_ROW + 7 ))
     _tui_line "${COLOR_RESET}"
-    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.8} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维全能工具箱${COLOR_RESET}   ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.9} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 
@@ -660,7 +660,7 @@ EOF
 # 参数：无
 # ------------------------------------------------------------
 _ui_banner_compact() {
-    _tui_line "  ${COLOR_BOLD}${COLOR_BLUE}ZETOPS${COLOR_RESET} ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维工具箱${COLOR_RESET}  ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.8} | Interactive Linux Ops Toolkit${COLOR_RESET}"
+    _tui_line "  ${COLOR_BOLD}${COLOR_BLUE}ZETOPS${COLOR_RESET} ${COLOR_BOLD}${COLOR_CYAN}交互式 Linux 运维工具箱${COLOR_RESET}  ${COLOR_GRAY}v${ZETOPS_VERSION:-1.5.9} | Interactive Linux Ops Toolkit${COLOR_RESET}"
     _tui_nl
 }
 

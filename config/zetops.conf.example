@@ -50,7 +50,7 @@ MONITOR_ALERT_EMAIL=""
 
 # ---- 自我更新配置 [Self Update] ----
 # 工具箱整体版本号（升级后自动更新）
-ZETOPS_VERSION="1.5.8"
+ZETOPS_VERSION="1.5.9"
 # GitHub 仓库地址（自我更新拉取来源）
 ZETOPS_REPO_URL="https://github.com/kuangxing6367/zc-easy-term-ops.git"
 # 更新分支
