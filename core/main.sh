@@ -3,7 +3,7 @@
 # 文件：core/main.sh
 # 功能：主程序入口（主菜单调度核心）
 # 作者：zc 团队
-# 版本：1.5.9
+# 版本：1.6.0
 # 日期：2026-08-05
 # 说明：加载核心库 → 环境检查 → 锁检查 → 扫描模块/插件 → 双协议调度
 #   （默认 CLI：--help/--version/--list/--run/--backup；--tui 进入交互界面）
@@ -145,25 +145,35 @@ load_plugins() {
 # 返回：无
 # ------------------------------------------------------------
 usage() {
-    echo "ZETOPS - 交互式 Linux 运维工具箱  v${ZETOPS_VERSION}"
-    echo ""
-    echo "用法:"
-    echo "  zetops [选项] [模块] [选项号]"
-    echo ""
-    echo "选项:"
-    echo "  -h, --help             显示本帮助"
-    echo "  -v, --version          显示版本号"
-    echo "  -l, --list             列出全部模块与插件"
-    echo "  -t, --tui              进入交互式 TUI（蓝色主题，支持鼠标点击）"
-    echo "  -r, --run 模块 选项号   非交互执行模块菜单项（适合脚本/定时任务）"
-    echo "  -b, --backup 路径       备份文件，生成 .bak.<时间戳> 副本"
-    echo ""
-    echo "示例:"
-    echo "  zetops                         默认 CLI：显示本帮助与模块列表"
-    echo "  zetops --tui                   进入 TUI 交互界面"
-    echo "  zetops --run 13 1              非交互执行模块13的第1项"
-    echo "  zetops --run ai_assistant 1    按模块短名执行"
-    echo "  zetops --backup /etc/nginx/nginx.conf"
+    cat <<EOF
+ZETOPS - Linux 运维工具箱  v${ZETOPS_VERSION}
+
+用法:
+  zetops                              直接进入交互界面（TUI）
+  zetops <模块>                       查看该模块菜单（与 TUI 同内容）
+  zetops <模块> <动作> [下级...]       非交互执行，动作与 TUI 菜单逐项对应
+
+选项:
+  -h, --help              显示本帮助
+  -v, --version           显示版本号
+  -l, --list              列出全部模块
+  -l, --list <模块>       列出该模块的全部动作（含编号）
+  -t, --tui               进入交互界面（等同裸执行）
+  -r, --run <模块> <编号>  兼容旧语法：按模块编号 + 菜单编号执行
+  -b, --backup <路径>      备份文件，生成 .bak.<时间戳> 副本
+  -y, --yes               非交互模式下放行危险操作（默认拒绝）
+
+模块与动作既可用编号，也可用菜单文字关键字（唯一命中才执行）:
+  zetops firewall                     查看防火墙模块菜单
+  zetops firewall 1                   执行菜单第 1 项
+  zetops firewall iptables            按关键字执行「iptables 规则管理」
+  zetops firewall iptables 1 1        逐级下钻：等同在 TUI 里依次按 1 → 1
+  zetops --list firewall              列出防火墙模块全部动作
+
+安全说明:
+  非交互执行时，所有「危险操作二次确认」默认一律拒绝，
+  必须显式追加 --yes 才会放行；不会因为缺少交互而静默执行危险操作。
+EOF
 }
 
 # ------------------------------------------------------------
@@ -215,24 +225,124 @@ resolve_module() {
 }
 
 # ------------------------------------------------------------
-# 非交互执行模块菜单项（--run 模块 选项号）
-# 参数：$1 模块下标  $2 选项号  $@ 其余参数透传
+# 读取指定模块的菜单项（CLI 命令树的唯一来源）
+# 说明：直接在 TUI 里渲染的那份 module_menu 输出上做解析，因此
+#      CLI 的动作清单与 TUI 菜单天然保持一致，不存在两套定义。
+# 参数：$1 模块下标
+# 输出：每行 "序号<TAB>名称"（已剔除 0=返回）
+# 返回：0=解析出至少一项 1=无
+# ------------------------------------------------------------
+module_menu_items() {
+    local idx="$1"
+    local raw=""
+    # 子 shell 内 source，避免覆盖其他模块已注册的同名函数
+    raw="$(
+        # shellcheck source=/dev/null
+        source "${MODULE_FILES[$idx]}" >/dev/null 2>&1
+        module_menu 2>/dev/null
+    )" || true
+    [[ -z "${raw}" ]] && return 1
+    local out
+    out="$(printf '%s\n' "${raw}" \
+        | sed -n 's/^[[:space:]]*\([0-9][0-9]*\)\.[[:space:]]\+\(.*[^[:space:]]\)[[:space:]]*$/\1\t\2/p' \
+        | awk -F'\t' '$1 != "0"')"
+    [[ -z "${out}" ]] && return 1
+    printf '%s\n' "${out}"
+    return 0
+}
+
+# ------------------------------------------------------------
+# 解析动作引用（与 TUI 菜单编号同源）
+# 参数：$1 模块下标  $2 动作引用（编号 / 菜单文字关键字）
+# 输出：动作编号
+# 返回：0=唯一命中 1=未命中或存在歧义
+# ------------------------------------------------------------
+resolve_action() {
+    local idx="$1" ref="$2"
+    local items
+    items="$(module_menu_items "${idx}")" || return 1
+
+    local num name
+    # 纯数字：与 TUI 菜单编号完全一致
+    if [[ "${ref}" =~ ^[0-9]+$ ]]; then
+        while IFS=$'\t' read -r num name; do
+            if [[ "${num}" == "${ref}" ]]; then
+                echo "${num}"
+                return 0
+            fi
+        done <<< "${items}"
+        return 1
+    fi
+
+    # 文字：大小写不敏感的子串匹配，必须唯一命中，避免选错功能
+    local -a hits=()
+    while IFS=$'\t' read -r num name; do
+        if [[ "${name,,}" == *"${ref,,}"* ]]; then
+            hits+=("${num}")
+        fi
+    done <<< "${items}"
+
+    if (( ${#hits[@]} == 1 )); then
+        echo "${hits[0]}"
+        return 0
+    fi
+    if (( ${#hits[@]} > 1 )); then
+        log_error "动作 '${ref}' 匹配到多个菜单项（${hits[*]}），请改用编号或更具体的关键字"
+        return 1
+    fi
+    return 1
+}
+
+# ------------------------------------------------------------
+# 打印指定模块的动作清单（zetops --list <模块> / 动作未命中时提示）
+# 参数：$1 模块下标
+# 返回：无
+# ------------------------------------------------------------
+list_module_actions() {
+    local idx="$1"
+    echo ""
+    echo "${MODULE_NAMES[$idx]}  ${COLOR_GRAY}(${MODULE_SHORTS[$idx]})${COLOR_RESET}"
+    echo "${COLOR_GRAY}  编号  动作${COLOR_RESET}"
+    local items num name
+    if ! items="$(module_menu_items "${idx}")"; then
+        echo "  (该模块没有可解析的菜单项)"
+        echo ""
+        return 0
+    fi
+    while IFS=$'\t' read -r num name; do
+        printf "  %-4s  %s\n" "${num}" "${name}"
+    done <<< "${items}"
+    echo ""
+    echo "${COLOR_GRAY}执行: zetops ${MODULE_SHORTS[$idx]} <编号> [下级编号...]${COLOR_RESET}"
+    echo ""
+}
+
+# ------------------------------------------------------------
+# 非交互执行模块菜单项（CLI 子命令）
+# 说明：把 CLI 传入的下级编号按顺序写入 stdin 应答队列，
+#      模块内原有的 read 选择会依次消费它们——等同于在 TUI 里
+#      依次按键，但不再有人工交互，也不会因误触执行别的功能。
+# 参数：$1 模块下标  $2 动作编号  $@ 下级应答序列
 # 返回：module_execute 的返回码
 # ------------------------------------------------------------
 run_module_noninteractive() {
     local idx="$1"
     local opt="$2"
     shift 2
+    local -a answers=("$@")
     local file="${MODULE_FILES[$idx]}"
     local short="${MODULE_SHORTS[$idx]}"
     local rc=0
     export ZETOPS_NONINTERACTIVE=1
-    exec 0</dev/null
+    if (( ${#answers[@]} > 0 )); then
+        exec 0< <(printf '%s\n' "${answers[@]}")
+    else
+        exec 0</dev/null
+    fi
     # shellcheck source=/dev/null
     source "${file}"
     CURRENT_MODULE="${short}"
-    module_execute "${opt}" "$@"
-    rc=$?
+    module_execute "${opt}" || rc=$?
     CURRENT_MODULE="menu"
     return "${rc}"
 }
@@ -303,15 +413,42 @@ main() {
     load_api_config
     check_deps || exit 1
 
+    # ---- 剥离全局开关：-y / --yes（可出现在任意位置） ----
+    local assume_yes=0
+    local -a argv=()
+    local a
+    for a in "$@"; do
+        case "${a}" in
+            -y|--yes) assume_yes=1 ;;
+            *) argv+=("${a}") ;;
+        esac
+    done
+    export ZETOPS_ASSUME_YES="${assume_yes}"
+    if (( ${#argv[@]} > 0 )); then
+        set -- "${argv[@]}"
+    else
+        set --
+    fi
+
     # ---- 参数解析（CLI 协议） ----
     local mode="cli"
     local run_ref="" run_opt=""
+    local sub_ref=""
+    local -a sub_rest=()
+    local idx=""
     local arg="${1:-}"
     case "${arg}" in
         -h|--help) usage; exit 0 ;;
         -v|--version) echo "ZETOPS v${ZETOPS_VERSION}"; exit 0 ;;
-        -l|--list) mode="list" ;;
         -t|--tui) mode="tui" ;;
+        -l|--list)
+            if [[ -n "${2:-}" ]]; then
+                mode="list_module"
+                sub_ref="${2}"
+            else
+                mode="list"
+            fi
+            ;;
         -r|--run)
             mode="run"
             run_ref="${2:-}"
@@ -328,12 +465,24 @@ main() {
             exit $?
             ;;
         "")
-            mode="cli"
+            # 裸执行直接进入交互界面（交互式工具箱的默认行为）
+            mode="tui"
             ;;
-        *)
+        -*)
             log_error "未知参数: ${arg}"
             usage
             exit 1
+            ;;
+        *)
+            # 子命令形式：zetops <模块> [动作] [下级...]
+            mode="subcmd"
+            sub_ref="$1"
+            shift
+            if (( $# > 0 )); then
+                sub_rest=("$@")
+            else
+                sub_rest=()
+            fi
             ;;
     esac
 
@@ -350,13 +499,48 @@ main() {
             list_all
             exit 0
             ;;
+        list_module)
+            idx=$(resolve_module "${sub_ref}") || {
+                log_error "未找到模块: ${sub_ref}"
+                list_all
+                exit 1
+            }
+            list_module_actions "${idx}"
+            exit 0
+            ;;
+        subcmd)
+            idx=$(resolve_module "${sub_ref}") || {
+                log_error "未找到模块: ${sub_ref}"
+                list_all
+                exit 1
+            }
+            # 只给模块名：展示与 TUI 完全一致的模块菜单，不执行任何动作
+            if (( ${#sub_rest[@]} == 0 )); then
+                (
+                    # shellcheck source=/dev/null
+                    source "${MODULE_FILES[$idx]}"
+                    module_description
+                    echo ""
+                    module_menu
+                )
+                exit 0
+            fi
+            local act_ref="${sub_rest[0]}"
+            local act_num=""
+            act_num="$(resolve_action "${idx}" "${act_ref}")" || {
+                log_error "模块 ${MODULE_SHORTS[$idx]} 中没有动作: ${act_ref}"
+                list_module_actions "${idx}"
+                exit 1
+            }
+            run_module_noninteractive "${idx}" "${act_num}" "${sub_rest[@]:1}"
+            exit $?
+            ;;
         run)
             if [[ -z "${run_ref}" || -z "${run_opt}" ]]; then
                 log_error "--run 需要模块（序号或短名）与选项号"
                 usage
                 exit 1
             fi
-            local idx
             idx=$(resolve_module "${run_ref}") || {
                 log_error "未找到模块: ${run_ref}（可用 zetops --list 查看）"
                 exit 1

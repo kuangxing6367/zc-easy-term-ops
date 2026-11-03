@@ -1,0 +1,16 @@
+# 统一换行符：本项目的脚本要在 Linux 上以 /bin/bash 直接执行，
+# 一旦被转成 CRLF 会报 "bad interpreter: /usr/bin/env: 'bash\r'"，因此强制 LF。
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.example   text eol=lf
+*.conf      text eol=lf
+*.md        text eol=lf
+
+# 二进制资源不做换行转换
+*.png       binary
+*.jpg       binary
+*.gif       binary
+*.gz        binary
+*.zip       binary

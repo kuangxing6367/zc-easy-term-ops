@@ -169,6 +169,20 @@ validate_path() {
 confirm_action() {
     local desc="$1"
     local ans
+
+    # 非交互模式下的防误触策略：
+    #   默认一律拒绝（不猜用户意图，也不消费应答队列）
+    #   仅当显式传入 --yes 时才放行，并在日志中留痕
+    if [[ "${ZETOPS_NONINTERACTIVE:-0}" == "1" ]]; then
+        if [[ "${ZETOPS_ASSUME_YES:-0}" == "1" ]]; then
+            log_warning "非交互模式（--yes 已指定）：自动确认危险操作 → ${desc}"
+            return 0
+        fi
+        log_error "非交互模式拒绝执行危险操作: ${desc}"
+        log_info "如确需执行，请在命令后追加 --yes"
+        return 1
+    fi
+
     log_warning "危险操作确认: ${desc}"
     echo -n "输入 yes 或 CONFIRM 以继续（其他输入取消）: "
     read -r ans || return 1
@@ -245,6 +259,10 @@ backup_file() {
 # 返回：无
 # ------------------------------------------------------------
 press_enter() {
+    # 非交互模式直接返回：既避免阻塞，也避免消费 CLI 传入的应答队列
+    if [[ "${ZETOPS_NONINTERACTIVE:-0}" == "1" ]]; then
+        return 0
+    fi
     echo -n "按回车键继续... "
     read -r _ || true
 }
@@ -258,6 +276,27 @@ read_input() {
     local -n _var="$1"
     local prompt="$2"
     local default="${3:-}"
+
+    # 非交互模式：绝不静默套用默认值改写系统状态
+    #   1. 先从 CLI 应答队列取值（等价于在 TUI 里依次输入）
+    #   2. 队列缺值时，仅在显式 --yes 下才采用默认值
+    #   3. 否则直接中止，避免"没人确认却按默认值改了配置"
+    if [[ "${ZETOPS_NONINTERACTIVE:-0}" == "1" ]]; then
+        local _ans=""
+        if read -r _ans 2>/dev/null && [[ -n "${_ans}" ]]; then
+            _var="${_ans}"
+            return 0
+        fi
+        if [[ "${ZETOPS_ASSUME_YES:-0}" == "1" ]]; then
+            log_warning "非交互模式（--yes）：'${prompt}' 采用默认值 '${default}'"
+            _var="${default}"
+            return 0
+        fi
+        log_error "非交互模式缺少必要输入: ${prompt}"
+        log_info "请在命令中按顺序补充该输入，或追加 --yes 采用默认值 '${default}'"
+        exit 1
+    fi
+
     if [[ ! -t 0 ]]; then
         _var="${default}"
         return 0

@@ -26,12 +26,23 @@
 内置大模型对话（OpenAI 兼容接口），**函数调用 (Function Calling)** 让 AI 读取服务器真实状态（系统信息 / 磁盘 / 服务 / 端口 / 日志 / Docker / MySQL），给出诊断与修复建议；写操作由用户二次确认，高危命令内置拦截。
 
 ### 5. 双模式：TUI 交互 + CLI 直达
-每个功能既能进界面交互操作，也能**一条命令非交互直达**（适合脚本 / 定时任务）：
+每个功能既能进界面交互操作，也能**一条命令非交互直达**（适合脚本 / 定时任务）。CLI 的动作清单**直接从 TUI 菜单派生**，两者不会各自漂移：
+
 ```bash
-zetops                  # 进入交互式 TUI
-zetops --run 13 1       # 非交互执行模块13第1项
-zetops --run ai_assistant 1   # 按模块短名执行
-zetops --list / --help / --version / --backup
+zetops                            # 直接进入交互界面
+zetops firewall                   # 打印该模块菜单（与 TUI 内一致，不执行）
+zetops --list firewall            # 列出该模块全部动作及编号
+zetops firewall 1                 # 按菜单编号执行
+zetops firewall iptables          # 按菜单文字关键字执行（唯一命中才执行）
+zetops firewall iptables 1 1      # 逐级下钻，等同在 TUI 里依次按 1 → 1
+zetops --help / --version / --backup <文件>
+```
+
+**非交互下的防误触**：所有危险操作二次确认默认**一律拒绝**，必须显式追加 `--yes` 才放行；需要用户输入的动作在无人应答时**直接中止**，绝不静默套用默认值改写系统配置。
+
+```bash
+zetops firewall 5                 # 危险动作：拒绝执行并提示补 --yes
+zetops firewall 5 --yes           # 显式授权后执行
 ```
 
 ### 6. 安全加固内置
