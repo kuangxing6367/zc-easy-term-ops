@@ -8,3 +8,6 @@ config/zetops.conf
 *.swp
 .DS_Store
 Thumbs.db
+
+# 测试语料（由 tests/mainstream/fetch_corpus.sh 幂等拉取，含第三方脚本，不入库）
+tests/mainstream/corpus/
