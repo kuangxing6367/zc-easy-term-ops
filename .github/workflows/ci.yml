@@ -8,26 +8,31 @@ on:
 
 jobs:
   tests:
-    # macOS 系统自带 bash 3.2：脚本若误用 4+ 语法（关联数组、mapfile 等）会在这里暴露。
-    name: bash on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    # 工具箱本体依赖 bash 4+（关联数组 / mapfile / local -n / ${var,,}），
+    # 所以不跑 macOS 自带 bash 3.2 —— 那是必然红，测不出东西。
+    name: bash on ubuntu
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       # 纯 Bash 零依赖；这里只补测试与静态检查需要的工具。
-      # shellcheck 仅作报告，不阻断——存量脚本风格差异大，先积累基线。
       - name: Install shellcheck
-        if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
 
       - name: Show environment
         run: |
           bash --version | head -1
           uname -a
+
+      # 最低版本守卫：README 声明需要 bash 4.0+，用语法开关显式断言，
+      # 避免有人在 3.2 上跑出满屏语法错却归因于"脚本坏了"。
+      - name: Assert bash >= 4.0
+        shell: bash
+        run: |
+          if (( BASH_VERSINFO[0] < 4 )); then
+            echo "::error::需要 bash 4.0+，当前 $BASH_VERSION"
+            exit 1
+          fi
 
       # 换行符守卫：Windows 上编辑过的 .sh 若带 CRLF，Linux 上会 bad interpreter。
       - name: Reject CRLF in shell scripts
@@ -52,7 +57,6 @@ jobs:
           exit $fail
 
       - name: shellcheck (advisory)
-        if: runner.os == 'Linux'
         continue-on-error: true
         shell: bash
         run: |
@@ -63,10 +67,11 @@ jobs:
         shell: bash
         run: bash tests/run_tests.sh
 
-      # 老 bash（macOS 3.2）不保证能跑完整套件，语法与核心入口必须通过。
-      - name: Smoke test CLI (non-interactive)
+      # 守住的正是 CLI 改造新加的子命令入口：模块菜单派生、动作表、下钻寻址。
+      - name: Smoke test CLI
         shell: bash
         run: |
           bash core/main.sh --version
           bash core/main.sh --list
           bash core/main.sh --list hardware_info
+          bash core/main.sh hardware_info 1 >/dev/null
