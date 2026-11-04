@@ -444,6 +444,17 @@ check_eq "PID 锁：锁文件记录当前 PID" "$$" "$(cat "${LOCK_FILE}")"
 # cleanup 应释放锁（删除锁文件）；用 _LOCK_OWNED 保护不误删他人锁
 rm -f "${LOCK_FILE}"
 
+# 锁路径回退：非 root / 只读 /var/run 时必须降级到可写目录，而不是直接失败
+# （旧实现写死 /var/run，非 root 跑 --list 就报"无法写入锁文件"）
+_lock_fb="$(
+    env -u ZETOPS_LOCK_FILE -u XDG_RUNTIME_DIR HOME=/nonexistent-home-zetops \
+        bash -c "source '${ZETOPS_ROOT}/core/main.sh'; _lock_file_path" 2>/dev/null
+)"
+check_true "PID 锁：锁路径回退后非空" test -n "${_lock_fb}"
+check_true "PID 锁：回退路径的目录可写" test -w "$(dirname "${_lock_fb}")"
+check_true "PID 锁：HOME 不可写时不落在 HOME 下" \
+    bash -c "[[ '${_lock_fb}' != /nonexistent-home-zetops/* ]]"
+
 # ---------- 13d. 文件管理器鼠标两段式（点击=选中，同项再点=确认进入） ----------
 echo ""
 echo "[13d] 文件管理器鼠标两段式（与主菜单一致）"

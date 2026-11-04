@@ -29,8 +29,40 @@ _resolve_script_path() {
 
 # 项目根目录（本文件位于 <root>/core/main.sh）
 ZETOPS_ROOT="$(cd -P "$(dirname "$(_resolve_script_path)")/.." && pwd)"
-LOCK_FILE="/var/run/zetops.lock"
+# 单实例锁（实际路径由 _lock_file_path 决定，惰性解析）
+ZETOPS_LOCK_FILE="${ZETOPS_LOCK_FILE:-}"
+LOCK_FILE=""
 CURRENT_MODULE="core"
+
+# ------------------------------------------------------------
+# 解析单实例锁路径
+# 说明：原实现写死 /var/run/zetops.lock，非 root 用户根本没有写权限，
+#      于是 zetops --list / --run 全部报 "无法写入锁文件" 直接失败。
+#      改为按可写性依次回退：
+#        ZETOPS_LOCK_FILE 环境变量 > /var/run（root）> $XDG_RUNTIME_DIR
+#        > ~/.zetops > $TMPDIR/zetops-<uid>.lock
+# 输出：锁文件绝对路径
+# ------------------------------------------------------------
+_lock_file_path() {
+    if [[ -n "${ZETOPS_LOCK_FILE}" ]]; then
+        printf '%s\n' "${ZETOPS_LOCK_FILE}"
+        return 0
+    fi
+    local cand dir
+    for cand in \
+        "/var/run/zetops.lock" \
+        "${XDG_RUNTIME_DIR:-}/zetops.lock" \
+        "${HOME:-}/.zetops/zetops.lock" \
+        "${TMPDIR:-/tmp}/zetops-$(id -u 2>/dev/null || echo 0).lock"; do
+        [[ "${cand}" == "/zetops.lock" || "${cand}" == "/.zetops/zetops.lock" ]] && continue
+        dir=$(dirname "${cand}")
+        mkdir -p "${dir}" 2>/dev/null || continue
+        [[ -w "${dir}" ]] || continue
+        printf '%s\n' "${cand}"
+        return 0
+    done
+    printf '%s\n' "${TMPDIR:-/tmp}/zetops.lock"
+}
 
 # ------------------------------------------------------------
 # 安全退出清理（Ctrl+C / 正常退出）
@@ -83,8 +115,10 @@ check_deps() {
 # 返回：0=获得锁 1=已被其他存活实例占用
 # ------------------------------------------------------------
 check_lock() {
+    # 已显式指定（调用方/测试直接赋值）则尊重，否则按可写性解析一次
+    [[ -z "${LOCK_FILE}" ]] && LOCK_FILE="$(_lock_file_path)"
     local dir
-    dir=$(dirname "${LOCK_FILE}" 2>/dev/null || echo /var/run)
+    dir=$(dirname "${LOCK_FILE}" 2>/dev/null || echo /tmp)
     mkdir -p "${dir}" 2>/dev/null || true
     if [[ -f "${LOCK_FILE}" ]]; then
         local old_pid=""
@@ -486,7 +520,12 @@ main() {
             ;;
     esac
 
-    check_lock || exit 1
+    # 只读的列表类命令不取单实例锁：它们不改任何状态，却要为了一个锁文件
+    # 在只读挂载 / 无权限目录上失败（--list 曾因此报 Permission denied）。
+    case "${mode}" in
+        list|list_module) ;;
+        *) check_lock || exit 1 ;;
+    esac
     load_modules
     load_plugins
 
