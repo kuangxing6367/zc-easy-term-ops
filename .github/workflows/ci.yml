@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    # macOS 系统自带 bash 3.2：脚本若误用 4+ 语法（关联数组、mapfile 等）会在这里暴露。
+    name: bash on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 纯 Bash 零依赖；这里只补测试与静态检查需要的工具。
+      # shellcheck 仅作报告，不阻断——存量脚本风格差异大，先积累基线。
+      - name: Install shellcheck
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: Show environment
+        run: |
+          bash --version | head -1
+          uname -a
+
+      # 换行符守卫：Windows 上编辑过的 .sh 若带 CRLF，Linux 上会 bad interpreter。
+      - name: Reject CRLF in shell scripts
+        shell: bash
+        run: |
+          bad=0
+          while IFS= read -r f; do
+            if grep -qU $'\r' "$f"; then
+              echo "::error file=$f::file contains CRLF line endings"
+              bad=1
+            fi
+          done < <(git ls-files '*.sh' 'install.sh')
+          exit $bad
+
+      - name: Syntax check (bash -n)
+        shell: bash
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "::error file=$f::syntax error"; fail=1; }
+          done < <(git ls-files '*.sh' 'install.sh')
+          exit $fail
+
+      - name: shellcheck (advisory)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          shellcheck -S warning -f gcc $(git ls-files '*.sh' 'install.sh') | tee shellcheck.log
+          echo "shellcheck 警告数: $(wc -l < shellcheck.log)"
+
+      - name: Run test suite
+        shell: bash
+        run: bash tests/run_tests.sh
+
+      # 老 bash（macOS 3.2）不保证能跑完整套件，语法与核心入口必须通过。
+      - name: Smoke test CLI (non-interactive)
+        shell: bash
+        run: |
+          bash core/main.sh --version
+          bash core/main.sh --list
+          bash core/main.sh --list hardware_info
