@@ -47,6 +47,19 @@ jobs:
           done < <(git ls-files '*.sh' 'install.sh')
           exit $bad
 
+      # 可执行位守卫：Windows 上 git 无 exec 概念，脚本很容易被提交成 100644，
+      # clone 到 Linux 后 ./install.sh 直接 Permission denied。
+      - name: Assert shell scripts are executable
+        shell: bash
+        run: |
+          bad=$(git ls-files -s '*.sh' 'install.sh' | awk '$1!="100755"{print $4}')
+          if [ -n "$bad" ]; then
+            echo "以下脚本缺少可执行位："
+            echo "$bad"
+            echo "::error::修复：git update-index --chmod=+x <文件>"
+            exit 1
+          fi
+
       - name: Syntax check (bash -n)
         shell: bash
         run: |
